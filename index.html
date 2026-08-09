@@ -188,7 +188,9 @@ window.addEventListener("keydown", e => {
   }
 });
 function movePlayer(x, y){
-  const half = squadHalfWidth();
+  // 隊列が大きくても左右の端まで動けるように、移動制限は小さめの固定幅にする
+  // (外側の列は道路の路肩にはみ出してもOK)
+  const half = Math.min(squadHalfWidth(), 46);
   player.x = Math.max(ROAD_L + half, Math.min(ROAD_R - half, x));
   if (y !== undefined) player.y = Math.max(150, Math.min(H - 55, y));
 }
