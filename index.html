@@ -52,7 +52,8 @@ const WEAPONS = [
   { name:"大砲",         rate:0.30,  dmg:6,  bspd:480, color:"#ff9c5c", ammo: 30,  cannon:true },
   { name:"レーザー",     rate:0.09,  dmg:1,  bspd:900, color:"#8affe9", bw:2, bh:24, ammo: 60,  pierce:3 },
   { name:"ロケットランチャー", short:"ロケラン", rate:0.45, dmg:10, bspd:380, color:"#ff7a7a", ammo: 15, missile:true },
-  { name:"戦車",         rate:0.35,  dmg:7,  bspd:460, color:"#9fd48a", ammo: 25,  cannon:true, tank:true }
+  { name:"戦車",         rate:0.35,  dmg:7,  bspd:460, color:"#9fd48a", ammo: 25,  cannon:true, tank:true },
+  { name:"手榴弾",       rate:0.85,  dmg:5,  bspd:300, color:"#a8d86b", ammo: 20,  grenade:true }
 ];
 
 // ステージごとに世界観がガラッと変わる背景テーマ
@@ -248,13 +249,14 @@ function addVal(){
 }
 function randWpn(){
   const r = Math.random();
-  if (r < 0.18) return 1;                    // ライフル
-  if (r < 0.34) return 2;                    // マシンガン
-  if (r < 0.50) return 3;                    // ショットガン
-  if (r < 0.62) return 4;                    // 大砲
-  if (r < 0.78) return 5;                    // レーザー
-  if (r < 0.88) return 6;                    // ミサイル
-  return 7;                                  // 戦車(防御力も上がる)
+  if (r < 0.16) return 1;                    // ライフル
+  if (r < 0.30) return 2;                    // マシンガン
+  if (r < 0.44) return 3;                    // ショットガン
+  if (r < 0.55) return 4;                    // 大砲
+  if (r < 0.68) return 5;                    // レーザー
+  if (r < 0.78) return 6;                    // ロケットランチャー
+  if (r < 0.89) return 7;                    // 戦車
+  return 8;                                  // 手榴弾
 }
 function makeGatePair(){
   function one(){
@@ -503,11 +505,12 @@ function update(dt){
   for (const g of gates){
     g.y += dy;
     for (const s of g.slots) if (s){ if (s.flash > 0) s.flash -= dt; if (s.cool > 0) s.cool -= dt; }
-    // 弾との当たり: レーンの数字を増減できるのは隊長の弾だけ(他の弾は素通り)
+    // 弾との当たり: +/−の増減は隊長の弾のみ。武器の弾数は誰の弾でも一律で増える
     for (const b of bullets){
-      if (b.dead || !b.ldr || g.y < b.y - 26 || g.y > b.y + 6) continue;
+      if (b.dead || g.y < b.y - 26 || g.y > b.y + 6) continue;
       const side = g.slots[laneAt(b.x)];
       if (!side || side.used) continue;
+      if (side.op !== "wpn" && !b.ldr) continue;   // 数字パネルは隊長の弾だけが反応(他は素通り)
       b.dead = true;
       const d = (b.dmg || 1);
       side.flash = 0.22;                        // 被弾中のバーは光って震える
@@ -524,11 +527,11 @@ function update(dt){
         if (side.val <= 0){ side.op = "add"; side.val = 0.1; }   // 撃ち続けるとプラスに反転!
       } else {
         side.hits += d;
-        while (side.hits >= 4){
-          side.hits -= 4;
+        while (side.hits >= 8){
+          side.hits -= 8;
           if (side.op === "wpn")
             side.bonus = (side.bonus || 0)
-              + Math.max(1, Math.round(WEAPONS[side.wid].ammo * 0.12)); // 撃つほど弾数が増える
+              + Math.max(1, Math.round(WEAPONS[side.wid].ammo * 0.12)); // 全員の弾で一律に弾数が増える
         }
       }
     }
@@ -584,16 +587,19 @@ function update(dt){
           en.count--;
           killCount++;
         }
-        burst(b.x, en.y + r*0.4, "#ffb3b3", (bw.cannon || bw.missile) ? 12 : 3);
-        if (bw.missile){                                      // ミサイルは周囲の群れにも爆風
-          burst(b.x, b.y, "#ff9c5c", 16);
+        burst(b.x, en.y + r*0.4, "#ffb3b3", (bw.cannon || bw.missile || bw.grenade) ? 12 : 3);
+        if (bw.missile || bw.grenade){                        // ロケラン・手榴弾は周囲の群れにも爆風
+          burst(b.x, b.y, bw.grenade ? "#a8d86b" : "#ff9c5c", 16);
+          const blastR = bw.grenade ? 75 : 90;
+          const blastD = bw.grenade ? 3 : 4;
           for (const other of enemies){
             if (other === en || other.count <= 0) continue;
-            if (Math.hypot(other.x - en.x, other.y - en.y) < 90){
-              const d2 = Math.min(4, other.count);
+            if (Math.hypot(other.x - en.x, other.y - en.y) < blastR){
+              const d2 = Math.min(blastD, other.count);
               other.count -= d2; killCount += d2;
             }
           }
+          shake = Math.max(shake, 0.12);
         }
         if (b.pierce > 0) b.pierce--; else b.dead = true;     // レーザーは貫通
       }
@@ -751,7 +757,7 @@ function updateBoss(dt){
       if (Math.abs(bl.x - b.x) < b.r && Math.abs(bl.y - b.y) < b.r){
         bl.dead = true; b.hp -= (bl.dmg || 1);
         const bw = WEAPONS[bl.wi || 0];
-        if (bw.cannon || bw.missile) burst(bl.x, bl.y, "#ff9c5c", 10);
+        if (bw.cannon || bw.missile || bw.grenade) burst(bl.x, bl.y, bw.grenade ? "#a8d86b" : "#ff9c5c", 10);
         else if (Math.random() < 0.3) burst(bl.x, bl.y, "#ffd27a", 2);
       }
     }
@@ -828,6 +834,20 @@ function draw(dt){
       ctx.beginPath(); ctx.arc(b.x, b.y, 7, 0, 6.283); ctx.fill();
       ctx.fillStyle = "#a34d1e";
       ctx.beginPath(); ctx.arc(b.x, b.y, 3.5, 0, 6.283); ctx.fill();
+    } else if (w.grenade){
+      // くるくる回りながら飛ぶ手榴弾
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(b.y * 0.08);
+      ctx.fillStyle = "#5a7a3a";
+      ctx.beginPath(); ctx.ellipse(0, 0, 5, 6.5, 0, 0, 6.283); ctx.fill();
+      ctx.fillStyle = "#8a8a8a";
+      ctx.fillRect(-2, -9, 4, 3.5);
+      ctx.restore();
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = "#a8d86b";
+      ctx.beginPath(); ctx.arc(b.x, b.y, 10, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 1;
     } else if (w.missile){
       ctx.fillStyle = "#e8e8e8";
       ctx.fillRect(b.x - 3, b.y - 14, 6, 14);
@@ -1151,8 +1171,20 @@ function drawWeaponIcon(wid, x, y){
     ctx.fillStyle = DARK; ctx.fillRect(-5, 5, 5, 7);              // グリップ
     ctx.fillStyle = ACC;  ctx.fillRect(2, -8, 8, 3);              // 照準器
     ctx.rotate(0.35);
-  } else if (wid === 7){     // 戦車(武器兼防御)
+  } else if (wid === 7){     // 戦車
     drawVehicleIcon("tank", 0, 0);
+  } else if (wid === 8){     // 手榴弾: 楕円ボディ+レバー+ピン
+    ctx.fillStyle = "#5a7a3a";
+    ctx.beginPath(); ctx.ellipse(0, 0, 8, 10, 0, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = "#3e5628"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(-8, 0); ctx.lineTo(8, 0); ctx.stroke();   // 溝
+    ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(0, 10); ctx.stroke();
+    ctx.fillStyle = "#8a8a8a";
+    ctx.fillRect(-3, -14, 6, 5);                                 // 口金
+    ctx.fillStyle = "#c8c8c8";
+    ctx.fillRect(2, -16, 8, 3);                                  // レバー
+    ctx.strokeStyle = "#e8c840"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(-5, -15, 3.5, 0, 6.283); ctx.stroke();  // ピンのリング
   }
   ctx.restore();
 }
