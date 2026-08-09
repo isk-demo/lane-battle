@@ -1,0 +1,1554 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>LANE BATTLE プロトタイプ</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0b1020;overflow:hidden;
+    -webkit-user-select:none;user-select:none;touch-action:none;
+    overscroll-behavior:none;-webkit-touch-callout:none;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{display:block;background:#0b1020;touch-action:none;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<script>
+"use strict";
+// ================= 基本設定 =================
+const W = 400, H = 700;              // 論理サイズ
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+let scale = 1;
+
+function fit(){
+  const ww = window.innerWidth, wh = window.innerHeight;
+  scale = Math.min(ww / W, wh / H);
+  cv.style.width  = (W * scale) + "px";
+  cv.style.height = (H * scale) + "px";
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width  = W * dpr;
+  cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", fit);
+fit();
+
+// ================= 状態 =================
+const ROAD_L = 30, ROAD_R = W - 30;         // 道路の左右端
+const LANES = 3;                             // ゲートの枠数
+function laneW(){ return (ROAD_R - ROAD_L) / LANES; }
+function laneAt(x){ return Math.max(0, Math.min(LANES - 1, Math.floor((x - ROAD_L) / laneW()))); }
+
+// 武器: ゲートで入手。拳銃以外は弾数制限があり、撃ち切るとストックの次へ(なければ拳銃)
+const WEAPONS = [
+  { name:"拳銃",         rate:0.72,  dmg:1,  bspd:560, color:"#ffe680", bw:4, bh:10, ammo: Infinity },
+  { name:"ライフル",     rate:0.10,  dmg:2,  bspd:700, color:"#7fe7ff", bw:4, bh:15, ammo: 70 },
+  { name:"マシンガン",   rate:0.055, dmg:1,  bspd:640, color:"#ffd27a", bw:3, bh:9,  ammo: 140, jitter:true },
+  { name:"ショットガン", rate:0.20,  dmg:1,  bspd:520, color:"#ffb37a", bw:5, bh:7,  ammo: 45,  spread:true },
+  { name:"大砲",         rate:0.30,  dmg:6,  bspd:480, color:"#ff9c5c", ammo: 30,  cannon:true },
+  { name:"レーザー",     rate:0.09,  dmg:1,  bspd:900, color:"#8affe9", bw:2, bh:24, ammo: 60,  pierce:3 },
+  { name:"ロケットランチャー", short:"ロケラン", rate:0.45, dmg:10, bspd:380, color:"#ff7a7a", ammo: 15, missile:true },
+  { name:"戦車",         rate:0.35,  dmg:7,  bspd:460, color:"#9fd48a", ammo: 25,  cannon:true, tank:true }
+];
+
+// ステージごとに世界観がガラッと変わる背景テーマ
+const THEMES = [
+  { bgTop:"#0e1530", bgBot:"#0b1020", road:"#171f3d", edge:"#2a3560", dash:"rgba(120,140,210,0.35)" }, // 夜の都市
+  { bgTop:"#4a2c0e", bgBot:"#2a1808", road:"#573a17", edge:"#7d5722", dash:"rgba(255,214,140,0.4)"  }, // 砂漠
+  { bgTop:"#0d2f1e", bgBot:"#07180f", road:"#154030", edge:"#216448", dash:"rgba(140,255,190,0.35)" }, // ジャングル
+  { bgTop:"#310f38", bgBot:"#1a0722", road:"#42184f", edge:"#682a7e", dash:"rgba(230,150,255,0.35)" }, // 魔界
+  { bgTop:"#11303c", bgBot:"#081820", road:"#164252", edge:"#22637a", dash:"rgba(150,230,255,0.35)" }  // 氷雪
+];
+// おどろおどろしいスタイル用の暗いテーマ
+const THEMES_DARK = [
+  { bgTop:"#1a1022", bgBot:"#0a0510", road:"#241830", edge:"#3a2a4a", dash:"rgba(160,120,200,0.3)"  }, // 呪われた夜道
+  { bgTop:"#251208", bgBot:"#120903", road:"#301a0c", edge:"#4a2c14", dash:"rgba(220,160,110,0.3)"  }, // 荒廃した荒野
+  { bgTop:"#0a1a12", bgBot:"#050d08", road:"#102418", edge:"#1a3a26", dash:"rgba(120,200,150,0.28)" }, // 毒の森
+  { bgTop:"#1e0a0a", bgBot:"#0d0404", road:"#2a1010", edge:"#421a1a", dash:"rgba(255,120,120,0.28)" }, // 血の道
+  { bgTop:"#101318", bgBot:"#06080c", road:"#181d26", edge:"#262e3c", dash:"rgba(150,170,200,0.25)" }  // 亡霊の霧
+];
+let gameStyle = "dark";                      // おどろおどろしいスタイルのみ
+function themeNow(){
+  const t = gameStyle === "dark" ? THEMES_DARK : THEMES;
+  return t[(stage - 1) % t.length];
+}
+let state = "title";                         // title | play | over
+let best = 0;
+
+let player, bullets, gates, enemies, parts, meters, speed, spawnDist, shootT, shake, flash, killCount;
+let bosses, bossFight, bossWarnT, nextBossAt, floats, bossShots, slashes, waves;
+let stage, stageStartM, stageBannerT;
+let chainN, chainLane, gateRowsThisStage;
+let resumeStage = 1;                         // ゲームオーバーになったステージから再開する
+
+function reset(){
+  player  = { x: W/2, y: 570, count: 1, weapons: [], shield: 0, vehicle: null };
+  chainN = 0; chainLane = 0; gateRowsThisStage = 0;
+  bullets = [];
+  gates   = [];
+  enemies = [];
+  parts   = [];                              // パーティクル
+  meters  = 0;
+  speed   = 48;
+  spawnDist = 30;                            // 開始3秒以内に最初のレーンが出る
+  shootT  = 0;
+  shake   = 0;
+  flash   = 0;
+  killCount = 0;
+  spawnKind = 0;
+  bosses = [];
+  bossFight = false;
+  bossWarnT = 0;
+  nextBossAt = 440;                          // 各ステージ440m地点でボス(さらに約10秒延長)
+  floats = [];                               // 浮かぶテキスト
+  bossShots = [];
+  slashes = [];                              // 斬撃エフェクト
+  waves = [];                                // 武器の衝撃波
+  stage = resumeStage;                       // 前回倒れたステージから再開
+  stageStartM = 0;
+  stageBannerT = 1.4;                        // 開始時に STAGE n 表示
+}
+// ステージ内の進行距離 + ステージ数に応じた難易度係数
+function effDiff(){
+  return (meters - stageStartM) + (stage - 1) * 100;
+}
+let spawnKind = 0;
+reset();
+
+// ================= 入力 =================
+// 画面のどこを触ってもOKな相対ドラッグ方式。
+// ポインター/タッチ両対応で、ブラウザのスクロールに奪われないようにする。
+let dragging = false, dragStartX = 0, dragStartY = 0, dragStartPX = 0, dragStartPY = 0;
+function toGameX(clientX){
+  const r = cv.getBoundingClientRect();
+  return (clientX - r.left) / scale;
+}
+function toGameY(clientY){
+  const r = cv.getBoundingClientRect();
+  return (clientY - r.top) / scale;
+}
+function beginDrag(clientX, clientY){
+  dragging = true;
+  dragStartX = toGameX(clientX);
+  dragStartY = toGameY(clientY);
+  dragStartPX = player.x;
+  dragStartPY = player.y;
+}
+function onDown(clientX, clientY){
+  if (state === "title") { state = "play"; reset(); beginDrag(clientX, clientY); return; }
+  if (state === "over" || state === "win"){
+    if (overT > 0.6){ state = "play"; reset(); beginDrag(clientX, clientY); }
+    return;
+  }
+  beginDrag(clientX, clientY);
+}
+function onMove(clientX, clientY, pressed){
+  if (state !== "play") return;
+  // pointerdown を取り逃していても、押しながらの移動を検知したらその場からドラッグ開始
+  if (!dragging){
+    if (pressed) beginDrag(clientX, clientY);
+    return;
+  }
+  const dx = toGameX(clientX) - dragStartX;
+  const dy = toGameY(clientY) - dragStartY;
+  movePlayer(dragStartPX + dx * 1.4, dragStartPY + dy * 1.4);  // 少し感度を高めに
+}
+function onUp(){ dragging = false; }
+
+if (window.PointerEvent){
+  window.addEventListener("pointerdown", e => { e.preventDefault(); onDown(e.clientX, e.clientY); }, { passive:false });
+  window.addEventListener("pointermove", e => { e.preventDefault(); onMove(e.clientX, e.clientY, e.buttons > 0 || e.pointerType === "touch"); }, { passive:false });
+  window.addEventListener("pointerup", onUp);
+  window.addEventListener("pointercancel", onUp);
+} else {
+  window.addEventListener("touchstart", e => { e.preventDefault(); onDown(e.touches[0].clientX, e.touches[0].clientY); }, { passive:false });
+  window.addEventListener("touchmove",  e => { e.preventDefault(); if (e.touches[0]) onMove(e.touches[0].clientX, e.touches[0].clientY, true); }, { passive:false });
+  window.addEventListener("touchend", onUp);
+  window.addEventListener("touchcancel", onUp);
+  window.addEventListener("mousedown", e => onDown(e.clientX, e.clientY));
+  window.addEventListener("mousemove", e => onMove(e.clientX, e.clientY, e.buttons > 0));
+  window.addEventListener("mouseup", onUp);
+}
+// iOSのスクロール・バウンス・ピンチをゲーム画面では常に無効化
+window.addEventListener("touchmove", e => e.preventDefault(), { passive:false });
+document.addEventListener("gesturestart", e => e.preventDefault());
+window.addEventListener("keydown", e => {
+  if (state === "play"){
+    if (e.key === "ArrowLeft")  movePlayer(player.x - 22, player.y);
+    if (e.key === "ArrowRight") movePlayer(player.x + 22, player.y);
+    if (e.key === "ArrowUp")    movePlayer(player.x, player.y - 22);
+    if (e.key === "ArrowDown")  movePlayer(player.x, player.y + 22);
+  } else if (e.key === " " || e.key === "Enter"){
+    if (state === "title" || ((state === "over" || state === "win") && overT > 0.6)){ state = "play"; reset(); }
+  }
+});
+function movePlayer(x, y){
+  const half = squadHalfWidth();
+  player.x = Math.max(ROAD_L + half, Math.min(ROAD_R - half, x));
+  if (y !== undefined) player.y = Math.max(150, Math.min(H - 55, y));
+}
+
+// ================= 部隊の隊列 =================
+// 兵士数とアイコン数を完全に一致させる。人数が増えると自動で密集して縮小表示。
+let _fCache = { n: -1 };
+function formationData(n){
+  if (_fCache.n === n) return _fCache;
+  // 3列+3列の6列隊形。中央(隊長の正面)は常に空けておく
+  const colX = [-11, 11, -32, 32, -53, 53];  // 中央寄りから埋まる
+  const pts = [];
+  let i = 0, row = 0;
+  while (i < n){
+    const inRow = Math.min(n - i, 6);
+    for (let k = 0; k < inRow; k++){
+      pts.push({ x: colX[k], y: row * 19 });
+      i++;
+    }
+    row++;
+  }
+  let half = 13, maxY = 0;
+  for (const p of pts){ half = Math.max(half, Math.abs(p.x) + 9.5); maxY = Math.max(maxY, p.y); }
+  _fCache = { n, s: 1, pts, half, maxY };
+  return _fCache;
+}
+function squadHalfWidth(){
+  return formationData(player.count).half;
+}
+// 隊列の最後尾の位置(強い武器持ちはここに並ぶ)
+function squadRearY(){
+  const others = player.count - 1;
+  if (player.vehicle && player.shield > 0){
+    const tankN = Math.min(1 + Math.floor(others / 12), 3);
+    const walkers = Math.max(0, others - tankN * 8);
+    return walkers > 0 ? player.y + 36 + formationData(walkers).maxY * 0.8 + 20 : player.y + 46;
+  }
+  return others > 0 ? player.y + formationData(others).maxY * 0.8 + 20 : player.y + 20;
+}
+// i番目の武器の持ち手の位置(0=隊長が最後尾、以降の兵士はその少し前)
+function holderPos(i){
+  const ry = squadRearY();
+  if (i === 0) return { x: player.x, y: ry };
+  const col = (i - 1) % 3, row = Math.floor((i - 1) / 3);
+  return { x: player.x + (col - 1) * 27, y: ry - 21 - row * 19 };
+}
+
+// ================= スポーン =================
+function scaledVal(base, growth){
+  return base + Math.floor(effDiff() / growth);
+}
+function randMul(){
+  // ×は常に1以上(×1.00〜×1.20)。マイナス方向の役割は÷が担う
+  return Math.round((1 + Math.random() * 0.2) * 100) / 100;
+}
+function addVal(){
+  return 1;                                  // +パネルは必ず+1から(撃って育てる)
+}
+function randWpn(){
+  const r = Math.random();
+  if (r < 0.18) return 1;                    // ライフル
+  if (r < 0.34) return 2;                    // マシンガン
+  if (r < 0.50) return 3;                    // ショットガン
+  if (r < 0.62) return 4;                    // 大砲
+  if (r < 0.78) return 5;                    // レーザー
+  if (r < 0.88) return 6;                    // ミサイル
+  return 7;                                  // 戦車(防御力も上がる)
+}
+function makeGatePair(){
+  function one(){
+    const r = Math.random();
+    if (r < 0.38) return { op:"add", val: addVal(), used:false, hits:0 };
+    if (r < 0.755) return { op:"wpn", wid: randWpn(), val: 0, used:false, hits:0 };  // 出現率さらに5割アップ
+    // マイナスは従来の2倍以上
+    return { op:"sub", val: 2 * (3 + Math.floor(Math.random()*scaledVal(6, 45))) + 1, used:false, hits:0 };
+  }
+  // 3枠それぞれに「ある/ない」のランダム性を持たせる
+  const slots = [];
+  for (let i = 0; i < LANES; i++) slots.push(Math.random() < 0.6 ? one() : null);
+  if (!slots.some(s => s)) slots[Math.floor(Math.random() * LANES)] = one();
+  // 逃げ道ゼロ(全枠が埋まっていて全部マイナス系)にならないように
+  const bad = g => g && (g.op === "sub");
+  if (slots.every(s => bad(s))){
+    slots[Math.floor(Math.random() * LANES)] = { op:"add", val: addVal(), used:false, hits:0 };
+  }
+  // 武器は1行に1つまで
+  let seenW = false;
+  for (let i = 0; i < LANES; i++){
+    if (slots[i] && slots[i].op === "wpn"){
+      if (seenW) slots[i] = { op:"add", val: addVal(), used:false, hits:0 };
+      seenW = true;
+    }
+  }
+  // ステージ最初の行はマイナス系を出さない(プラスから始まる)
+  if (gateRowsThisStage === 0){
+    for (let i = 0; i < LANES; i++){
+      if (bad(slots[i])) slots[i] = { op:"add", val: addVal(), used:false, hits:0 };
+    }
+  }
+  gateRowsThisStage++;
+  gates.push({ y: -60, slots });
+}
+// ステージ難易度に応じた敵の銃
+function enemyGun(){
+  const t = Math.min(stage, 5);
+  if (t === 1) return { spd: 190, n: 3, cd: 1.9, dmg: 1, color: "#ffe680" };   // 拳銃
+  if (t === 2) return { spd: 280, n: 3, cd: 1.7, dmg: 1, color: "#7fe7ff" };   // ライフル
+  if (t === 3) return { spd: 250, n: 6, cd: 1.5, dmg: 1, color: "#ffd27a" };   // マシンガン
+  if (t === 4) return { spd: 230, n: 8, cd: 1.8, dmg: 1, color: "#ffb37a" };   // ショットガン
+  return           { spd: 330, n: 6, cd: 1.3, dmg: 2, color: "#ff9c9c" };      // 強化ライフル
+}
+function makeEnemy(forceMid){
+  // ステージが進むほど、1発では倒れない中堅兵の群れが増える
+  const mid = forceMid === true ? true
+    : Math.random() < Math.min(0.12 + stage * 0.04, 0.5);
+  let n = 3 + Math.floor(effDiff() / 22) + Math.floor(Math.random()*4);
+  if (mid) n = Math.max(2, Math.round(n * 0.6));
+  const x = ROAD_L + 50 + Math.random() * (ROAD_R - ROAD_L - 100);
+  enemies.push({ x, y: -50, count: n, wob: Math.random()*6.28,
+    atkT: 0, gun: enemyGun(), gunT: Math.random() * 1.5,
+    hpPer: mid ? 3 : 1, hpBuf: 0 });
+}
+function addSlash(x, y){
+  slashes.push({ x, y, t: 0.22, ang: Math.random() * 0.8 - 0.4 });
+}
+// 武器の衝撃波: 兵士に届くと兵士が減る
+function updateWaves(dt){
+  for (const wv of waves){
+    wv.x += wv.vx * dt;
+    wv.y += wv.vy * dt;
+    if (wv.kind === "bomb"){
+      // 爆弾: 着弾地点で爆発、近くにいると爆風ダメージ
+      wv.fuse -= dt;
+      if (wv.fuse <= 0 && !wv.dead){
+        wv.dead = true;
+        burst(wv.x, wv.y, "#ff9c5c", 24);
+        burst(wv.x, wv.y, "#ffd76b", 16);
+        shake = Math.max(shake, 0.25);
+        if (Math.hypot(wv.x - player.x, wv.y - player.y) < 85){
+          addSlash(player.x, player.y - 24);
+          damagePlayer(wv.dmg, "#ff9c9c");
+        }
+      }
+      continue;
+    }
+    if (!wv.dead && Math.abs(wv.y - player.y) < 22
+        && Math.abs(wv.x - player.x) < squadHalfWidth() + (wv.wide || (wv.big ? 22 : (wv.kind === "shot" ? 8 : 12)))){
+      wv.dead = true;
+      addSlash(player.x, player.y - 24);
+      damagePlayer(wv.dmg, "#ff9c9c");
+      shake = Math.max(shake, wv.big ? 0.25 : 0.1);
+    }
+  }
+  waves = waves.filter(wv => !wv.dead && wv.y < H + 40 && wv.y > -40 && wv.x > -40 && wv.x < W + 40);
+}
+function spawnStep(dy){
+  if (bossWarnT > 0 || stageBannerT > 0.7) return;  // 予告・暗転中のみ停止(明転したらすぐ出る)
+  spawnDist -= dy;
+  if (spawnDist <= 0){
+    if (bossFight){                                // ボス戦は雑魚+強め雑魚の混成部隊が湧く
+      if (Math.random() < 0.25){ makeGatePair(); spawnDist = 1000; }
+      else {
+        makeEnemy();
+        if (Math.random() < 0.5) makeEnemy(true);  // 装甲つきの強め雑魚も一緒に
+        spawnDist = 120;
+      }
+    }
+    // +1レーンの連続区間(隙間なく並ぶ)
+    else if (chainN > 0){
+      makeChainRow(); chainN--; spawnKind = 1; spawnDist = 30;
+    }
+    else if (spawnKind === 0 || Math.random() < 0.55){
+      if (Math.random() < 0.05){                   // まれに+1が連続する区間(5〜20枚)が始まる
+        chainN = 2 + Math.floor(Math.random() * 8);   // 3〜10枚(獲得量を半減)
+        chainLane = Math.floor(Math.random() * LANES);
+        makeChainRow(); spawnDist = 30;
+      } else {
+        makeGatePair(); spawnDist = 250;
+      }
+      spawnKind = 1;
+    }
+    else {
+      // 緑の連続パネル帯が画面上部にある間は敵を出さない(重なり防止)
+      if (gates.some(g => g.y < 170 && g.slots.some(s => s && s.chain))){
+        spawnDist = 120;
+      } else {
+        makeEnemy(); if (Math.random() < 0.4) makeEnemy(); spawnKind = 0; spawnDist = 200;
+      }
+    }
+  }
+}
+// 同じレーンに+1だけが並ぶ行(緑パネル・撃っても育たない)
+function makeChainRow(){
+  const slots = [null, null, null].slice(0, LANES);
+  slots[chainLane] = { op:"add", val: 1, used:false, hits:0, chain: true };
+  gates.push({ y: -60, slots });
+}
+
+// ================= パーティクル =================
+function burst(x, y, color, n){
+  for (let i = 0; i < n; i++){
+    const a = Math.random() * 6.28, s = 60 + Math.random()*160;
+    parts.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, t: 0.4 + Math.random()*0.3, color });
+  }
+}
+
+// ================= 更新 =================
+let overT = 0;
+function applyGate(g){
+  if (g.op === "add") player.count += Math.floor(g.val);   // 実際の増減は整数部分
+  if (g.op === "sub") player.count -= Math.floor(g.val);
+  if (g.op === "wpn"){
+    const total = WEAPONS[g.wid].ammo + (g.bonus || 0);
+    // 1人1丁: 最初の1丁は隊長、次からは兵士が1人ずつ装備
+    const cap = Math.min(player.count, 8);
+    while (player.weapons.length >= cap && player.weapons.length > 0)
+      player.weapons.shift();                // 持ち手が足りなければ一番古い武器と交換
+    player.weapons.push({ wid: g.wid, ammo: total, t: 0 });
+    const who = player.weapons.length === 1 ? "隊長" : "兵士";
+    floats.push({ x: player.x, y: player.y - 70,
+      text: who + "が" + WEAPONS[g.wid].name + "を装備! (" + total + "発)", color: "#ffd76b", t: 1.4 });
+  }
+  player.count = Math.min(player.count, 999);
+  if (player.count <= 0){
+    // マイナス系バーでは全滅させない: 1人残してゲーム続行
+    player.count = 1;
+    floats.push({ x: player.x, y: player.y - 55, text: "残り1人!", color: "#ff6b6b", t: 1.4 });
+    shake = Math.max(shake, 0.35); flash = Math.max(flash, 0.3);
+  }
+}
+function gameOver(){
+  state = "over"; overT = 0;
+  resumeStage = stage;                       // リトライは同じステージから
+  best = Math.max(best, stage);              // ベストは到達ステージで記録
+  shake = 0.5; flash = 0.6;
+  burst(player.x, player.y, "#6ec1ff", 40);
+}
+
+function update(dt){
+  if (state !== "play"){ if (state === "over" || state === "win") overT += dt; updateFx(dt); return; }
+
+  meters += (speed * dt) / 10;
+  speed = Math.min(48 + effDiff() * 0.16, 96);   // 5割減速
+  if (stageBannerT > 0) stageBannerT -= dt;
+  const dy = speed * dt;
+
+  spawnStep(dy);
+  updateBoss(dt);
+  updateWaves(dt);
+
+  // 射撃: 一般兵は全員デフォルトの拳銃。取得武器は後方の隊長・兵士が1人1丁で撃つ
+  shootT -= dt;
+  if (shootT <= 0){
+    const pw = WEAPONS[0];
+    shootT = pw.rate;
+    const holdersN = Math.min(player.weapons.length, player.count);
+    const soldierHolders = Math.max(0, holdersN - 1);
+    const pistolSoldiers = Math.max(0, player.count - 1 - soldierHolders);
+    if (pistolSoldiers > 0){
+      const f = formationData(pistolSoldiers);
+      const capN = Math.min(f.pts.length, 36, Math.max(1, Math.floor(240 * pw.rate)));
+      for (let c = 0; c < capN; c++){
+        const p = f.pts[c];
+        bullets.push({ x: player.x + p.x, y: player.y + p.y * 0.8 - 12,
+          vx: 0, vy: -pw.bspd, dmg: pw.dmg, wi: 0, pierce: 0 });
+      }
+    }
+    if (holdersN === 0){
+      // 隊長の拳銃(レーンの数字を増減できるのはこの弾だけ)
+      const pos = holderPos(0);
+      bullets.push({ x: pos.x, y: pos.y - 16, vx: 0, vy: -pw.bspd, dmg: pw.dmg, wi: 0, pierce: 0, ldr: true });
+    }
+  }
+  // 取得武器(最後尾の隊長→兵士が、それぞれの連射速度で発射)
+  for (let i = player.weapons.length - 1; i >= 0; i--){
+    if (i >= player.count) continue;               // 持ち手がいない
+    const hw = player.weapons[i];
+    hw.t = (hw.t || 0) - dt;
+    if (hw.t > 0) continue;
+    const w = WEAPONS[hw.wid];
+    hw.t = w.rate;
+    const pos = holderPos(i);
+    let fx = pos.x;
+    if (w.jitter) fx += (Math.random() - 0.5) * 6;
+    const isLdr = (i === 0);                       // 隊長の武器の弾だけがレーンを増減できる
+    if (w.spread){
+      for (const vx of [-90, 0, 90])
+        bullets.push({ x: fx, y: pos.y - 16, vx, vy: -w.bspd, dmg: w.dmg, wi: hw.wid, pierce: 0, ldr: isLdr });
+    } else {
+      bullets.push({ x: fx, y: pos.y - 16, vx: 0, vy: -w.bspd, dmg: w.dmg, wi: hw.wid, pierce: w.pierce || 0, ldr: isLdr });
+    }
+    // マズルフラッシュ(武器ごとに派手さが変わる)
+    const heavy = w.cannon || w.missile;
+    burst(fx, pos.y - 22, w.color, heavy ? 10 : (w.spread ? 6 : 3));
+    if (heavy) shake = Math.max(shake, 0.07);
+    hw.ammo--;
+    if (hw.ammo <= 0){
+      floats.push({ x: player.x, y: player.y - 70, text: WEAPONS[hw.wid].name + " 弾切れ", color: "#ffb0b0", t: 1.2 });
+      player.weapons.splice(i, 1);
+    }
+  }
+
+  // 弾
+  for (const b of bullets){
+    b.y += b.vy * dt;
+    b.x += (b.vx || 0) * dt;
+    // ロケットは煙の尾を引く
+    if (b.wi && WEAPONS[b.wi].missile && Math.random() < 0.45)
+      parts.push({ x: b.x + (Math.random()-0.5)*4, y: b.y + 8, vx: (Math.random()-0.5)*20, vy: 50, t: 0.35, color: "#9aa4b2" });
+  }
+
+  // ゲート
+  for (const g of gates){
+    g.y += dy;
+    for (const s of g.slots) if (s){ if (s.flash > 0) s.flash -= dt; if (s.cool > 0) s.cool -= dt; }
+    // 弾との当たり: レーンの数字を増減できるのは隊長の弾だけ(他の弾は素通り)
+    for (const b of bullets){
+      if (b.dead || !b.ldr || g.y < b.y - 26 || g.y > b.y + 6) continue;
+      const side = g.slots[laneAt(b.x)];
+      if (!side || side.used) continue;
+      b.dead = true;
+      const d = (b.dmg || 1);
+      side.flash = 0.22;                        // 被弾中のバーは光って震える
+      if (side.op === "add"){
+        if (!side.chain){                                         // 緑の連続パネルは撃っても育たない
+          side.grow = (side.grow || 0) + d;
+          while (side.grow >= 2){                                 // 2ヒットごとに0.1(育ちを半減)
+            side.grow -= 2;
+            side.val = Math.round((side.val + 0.1) * 10) / 10;
+          }
+        }
+      } else if (side.op === "sub"){
+        side.val = Math.round((side.val - 0.1 * d) * 10) / 10;   // 当たるたび0.1ずつ弱まる
+        if (side.val <= 0){ side.op = "add"; side.val = 0.1; }   // 撃ち続けるとプラスに反転!
+      } else {
+        side.hits += d;
+        while (side.hits >= 4){
+          side.hits -= 4;
+          if (side.op === "wpn")
+            side.bonus = (side.bonus || 0)
+              + Math.max(1, Math.round(WEAPONS[side.wid].ammo * 0.12)); // 撃つほど弾数が増える
+        }
+      }
+    }
+    // 通過判定(自分のいる枠だけが発動。空き枠なら何も起きない)
+    if (!g.applied && g.y >= player.y - 8){
+      g.applied = true;
+      const side = g.slots[laneAt(player.x)];
+      if (side){
+        side.used = true;
+        applyGate(side);
+        const good = (side.op === "add" || side.op === "wpn" || (side.op === "mul" && side.val >= 1));
+        burst(player.x, player.y - 20, good ? "#5df08d" : "#ff6b6b", good ? 16 : 10);
+        if (!good) shake = Math.max(shake, 0.25);
+        // どれか1つ取ったら同じ行の他のバーは消える
+        for (let i = 0; i < LANES; i++) if (g.slots[i] !== side) g.slots[i] = null;
+      }
+    }
+  }
+  gates = gates.filter(g => g.y < H + 80);
+
+  // 敵: プレイヤーめがけて突進し、体ごとぶつかってくる
+  for (const en of enemies){
+    en.wob += dt * 4;
+    const er = enemyRadius(en);
+    if (en.count > 0){
+      const dxc = player.x - en.x, dyc = player.y - en.y;
+      const dl = Math.hypot(dxc, dyc) || 1;
+      const charge = 55 + (stage - 1) * 8;         // 突進速度(ステージで加速)
+      en.x += (dxc / dl) * charge * 0.7 * dt;
+      en.y += dy * 0.9 + Math.max(0, dyc / dl) * charge * dt;
+      // 体当たり!
+      if (Math.abs(en.y - player.y) < 28 && Math.abs(en.x - player.x) < er + squadHalfWidth()){
+        const dmg = Math.ceil(en.count * 0.6);
+        burst(en.x, en.y, "#ff6b6b", 16);
+        addSlash(player.x, player.y - 26);
+        damagePlayer(dmg, "#ff6b6b");
+        en.count = 0;                              // ぶつかった敵は消滅
+        shake = Math.max(shake, 0.3);
+      }
+    }
+    // 弾との当たり
+    for (const b of bullets){
+      if (b.dead || en.count <= 0) continue;
+      const r = enemyRadius(en);
+      if (Math.abs(b.x - en.x) < r && Math.abs(b.y - en.y) < r){
+        if (b.lastHit === en) continue;                       // 貫通弾が同じ群れを連続ヒットしない
+        b.lastHit = en;
+        const bw = WEAPONS[b.wi || 0];
+        // 中堅兵は1人あたりHP3(蓄積ダメージで倒す)
+        en.hpBuf = (en.hpBuf || 0) + (b.dmg || 1);
+        while (en.hpBuf >= (en.hpPer || 1) && en.count > 0){
+          en.hpBuf -= (en.hpPer || 1);
+          en.count--;
+          killCount++;
+        }
+        burst(b.x, en.y + r*0.4, "#ffb3b3", (bw.cannon || bw.missile) ? 12 : 3);
+        if (bw.missile){                                      // ミサイルは周囲の群れにも爆風
+          burst(b.x, b.y, "#ff9c5c", 16);
+          for (const other of enemies){
+            if (other === en || other.count <= 0) continue;
+            if (Math.hypot(other.x - en.x, other.y - en.y) < 90){
+              const d2 = Math.min(4, other.count);
+              other.count -= d2; killCount += d2;
+            }
+          }
+        }
+        if (b.pierce > 0) b.pierce--; else b.dead = true;     // レーザーは貫通
+      }
+    }
+  }
+  enemies = enemies.filter(en => en.count > 0 && en.y < H + 60);
+  bullets = bullets.filter(b => !b.dead && b.y > -20 && b.x > ROAD_L - 24 && b.x < ROAD_R + 24);
+
+  updateFx(dt);
+}
+function updateFx(dt){
+  for (const p of parts){ p.t -= dt; p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 300*dt; }
+  parts = parts.filter(p => p.t > 0);
+  for (const s of slashes) s.t -= dt;
+  slashes = slashes.filter(s => s.t > 0);
+  for (const f of floats){ f.t -= dt; f.y -= 28 * dt; }
+  floats = floats.filter(f => f.t > 0);
+  shake = Math.max(0, shake - dt * 1.6);
+  flash = Math.max(0, flash - dt * 2);
+}
+function enemyRadius(en){ return 20 + Math.min(en.count, 40) * 1.0; }
+
+// ================= ボス =================
+// ダメージはまずシールド(車・戦車)が受け止める
+function damagePlayer(rawDmg, color){
+  let d = rawDmg;
+  if (player.shield > 0){
+    const ab = Math.min(player.shield, d);
+    player.shield -= ab; d -= ab;
+    burst(player.x, player.y - 12, "#7de8ff", 6);
+    if (player.shield <= 0 && player.vehicle){
+      floats.push({ x: player.x, y: player.y - 65, text: "戦車が大破!", color: "#ffb0b0", t: 1.2 });
+      burst(player.x, player.y - 20, "#9aa4b2", 14);
+      player.vehicle = null;                 // 効果が切れたら消える
+    }
+  }
+  if (d > 0){
+    d = Math.min(d, player.count);
+    player.count -= d;
+    floats.push({ x: player.x, y: player.y - 50, text: "-" + d, color: color || "#ff9c9c", t: 0.9 });
+    if (player.count <= 0){ player.count = 0; gameOver(); }
+  }
+}
+
+const BOSS_WEAPONS = ["sword", "axe", "spear", "bow", "whip", "bomb"];
+function spawnBoss(){
+  const s = stage - 1;
+  const totalHp = 120 + s * 90 + Math.floor(effDiff() * 0.15);
+  const roll = Math.random();
+  const n = roll < 0.45 ? 1 : roll < 0.8 ? 2 : 3;         // 1体/2体/3体
+  for (let i = 0; i < n; i++){
+    const sizeK = n === 1 ? (0.9 + Math.random() * 0.5)   // 単体は大きめ
+               : n === 2 ? (0.7 + Math.random() * 0.3)
+                         : (0.55 + Math.random() * 0.2);  // 3体は小さめ
+    bosses.push({
+      x: W/2 + (i - (n - 1) / 2) * 115,
+      y: -80 - i * 40,
+      hp: Math.ceil(totalHp / n), maxHp: Math.ceil(totalHp / n),
+      r: Math.max(26, Math.round((46 + Math.min(s, 4) * 5) * sizeK)),
+      wob: Math.random() * 6.28, age: 0,
+      wtype: BOSS_WEAPONS[Math.floor(Math.random() * BOSS_WEAPONS.length)],
+      atkT: 0.6 + Math.random() * 0.5, waveCd: 1.2 + Math.random(), swingT: 0
+    });
+  }
+  bossFight = true;
+}
+
+// 武器ごとの遠距離攻撃
+function fireBossWave(b){
+  const dxw = player.x - b.x, dyw = player.y - b.y;
+  const dl = Math.hypot(dxw, dyw) || 1;
+  const s1 = stage - 1;
+  b.swingT = 0.25;
+  const from = { x: b.x, y: b.y + b.r * 0.5 };
+  if (b.wtype === "axe"){
+    b.waveCd = 2.0;
+    waves.push({ ...from, vx: dxw/dl*260, vy: dyw/dl*260, big:true, kind:"crescent", dmg: 3 + s1 });
+  } else if (b.wtype === "sword"){
+    b.waveCd = 1.5;
+    waves.push({ ...from, vx: dxw/dl*300, vy: dyw/dl*300, big:false, kind:"crescent", dmg: 2 + Math.floor(s1/2) });
+  } else if (b.wtype === "spear"){
+    b.waveCd = 2.1;
+    waves.push({ ...from, vx: dxw/dl*430, vy: dyw/dl*430, big:false, kind:"spear", dmg: 3 + Math.floor(s1/2) });
+  } else if (b.wtype === "bow"){
+    b.waveCd = 1.1;
+    waves.push({ ...from, vx: dxw/dl*480, vy: dyw/dl*480, big:false, kind:"arrow", dmg: 2 + Math.floor(s1/2) });
+  } else if (b.wtype === "whip"){
+    b.waveCd = 1.9;
+    waves.push({ ...from, vx: dxw/dl*210, vy: dyw/dl*210, big:true, kind:"whip", dmg: 2 + Math.floor(s1/2), wide: 46 });
+  } else {  // bomb
+    b.waveCd = 2.4;
+    waves.push({ ...from, vx: dxw/dl*180, vy: dyw/dl*180, kind:"bomb", dmg: 4 + s1, fuse: dl / 180 });
+  }
+}
+
+function updateBoss(dt){
+  // 出現予告 → 出現
+  if (!bossFight && bossWarnT <= 0 && stageBannerT <= 0 && meters >= nextBossAt){
+    bossWarnT = 1.4;
+    shake = Math.max(shake, 0.2);
+  }
+  if (bossWarnT > 0){
+    bossWarnT -= dt;
+    if (bossWarnT <= 0) spawnBoss();
+    return;
+  }
+  if (!bossFight) return;
+
+  for (const b of bosses){
+    b.wob += dt * 3;
+    b.age += dt;
+
+    // のしのしと一歩ずつ、まっすぐ兵士へ近づいてくる(前後移動はしない)
+    const stomp = 0.35 + 0.65 * Math.abs(Math.sin(b.wob * 1.6));   // 踏みしめのリズム
+    b.y += (26 + (stage - 1) * 4 + b.age * 0.8) * stomp * dt;
+    if (b.age < 15 && b.y > 300) b.y = 300;          // 出現から15秒は下まで来ない
+
+    // プレイヤー追尾(のしのし左右に揺れながら) + ボス同士は重ならない
+    b.x += (player.x - b.x) * dt * 0.35 + Math.sin(b.wob * 1.6) * 16 * dt;
+    for (const o of bosses){
+      if (o === b) continue;
+      const ddx = b.x - o.x;
+      if (Math.abs(ddx) < (b.r + o.r) * 0.85 && Math.abs(b.y - o.y) < (b.r + o.r) * 0.8)
+        b.x += (ddx >= 0 ? 1 : -1) * 70 * dt;
+    }
+    b.x = Math.max(ROAD_L + b.r*0.6, Math.min(ROAD_R - b.r*0.6, b.x));
+
+    // 密着距離で止まる
+    const meleeY = player.y - b.r - 20;
+    if (b.y > meleeY) b.y = meleeY;
+
+    // 近接攻撃
+    b.swingT = Math.max(0, b.swingT - dt);
+    const inMelee = b.y >= meleeY - 16 && Math.abs(b.x - player.x) < b.r + squadHalfWidth() + 10;
+    if (inMelee){
+      b.atkT -= dt;
+      if (b.atkT <= 0){
+        b.atkT = 0.9;
+        b.swingT = 0.25;
+        addSlash(player.x, player.y - 30);
+        addSlash(player.x + 14, player.y - 22);
+        damagePlayer(4 + (stage - 1) * 2, "#ff6b6b");
+        shake = Math.max(shake, 0.3); flash = Math.max(flash, 0.15);
+        if (state !== "play") return;
+      }
+    } else if (b.y > 10){
+      // 遠距離: 武器ごとの攻撃
+      b.waveCd -= dt;
+      if (b.waveCd <= 0) fireBossWave(b);
+    }
+
+    // 弾との当たり
+    for (const bl of bullets){
+      if (bl.dead || b.hp <= 0) continue;
+      if (Math.abs(bl.x - b.x) < b.r && Math.abs(bl.y - b.y) < b.r){
+        bl.dead = true; b.hp -= (bl.dmg || 1);
+        const bw = WEAPONS[bl.wi || 0];
+        if (bw.cannon || bw.missile) burst(bl.x, bl.y, "#ff9c5c", 10);
+        else if (Math.random() < 0.3) burst(bl.x, bl.y, "#ffd27a", 2);
+      }
+    }
+    if (b.hp <= 0){
+      burst(b.x, b.y, "#ffd76b", 45);
+      burst(b.x, b.y, "#ff8a5c", 28);
+      shake = Math.max(shake, 0.4);
+    }
+  }
+  bosses = bosses.filter(b => b.hp > 0);
+
+  if (bosses.length === 0){                   // 全ボス撃破!
+    if (stage >= 10){                         // 全10ステージ制覇!
+      state = "win"; overT = 0;
+      resumeStage = 1;
+      best = Math.max(best, stage);
+      bossFight = false;
+      return;
+    }
+    floats.push({ x: W/2, y: 200, text: "STAGE " + stage + " クリア!", color: "#5df08d", t: 2.0 });
+    flash = Math.max(flash, 0.2);
+    bossFight = false;
+    stage++;
+    stageStartM = meters;
+    stageBannerT = 2.2;
+    player.count = 1;                        // 次のステージも1人から
+    gates = []; enemies = []; bullets = []; bossShots = []; waves = [];
+    spawnDist = 30;                          // 新ステージ開始3秒以内にレーンが出る
+    gateRowsThisStage = 0;                   // 新ステージ最初の行はプラスから
+    nextBossAt = stageStartM + 440;
+  }
+}
+
+// ================= 描画 =================
+let roadOff = 0;
+function draw(dt){
+  ctx.save();
+  if (shake > 0){
+    ctx.translate((Math.random()-0.5)*shake*14, (Math.random()-0.5)*shake*14);
+  }
+  // 背景(ステージごとにテーマが変わる)
+  const th = themeNow();
+  const bg = ctx.createLinearGradient(0,0,0,H);
+  bg.addColorStop(0, th.bgTop); bg.addColorStop(1, th.bgBot);
+  ctx.fillStyle = bg; ctx.fillRect(-10,-10,W+20,H+20);
+
+  // 道路
+  ctx.fillStyle = th.road;
+  ctx.fillRect(ROAD_L, -10, ROAD_R-ROAD_L, H+20);
+  ctx.fillStyle = th.edge;
+  ctx.fillRect(ROAD_L-4, -10, 4, H+20);
+  ctx.fillRect(ROAD_R,  -10, 4, H+20);
+  // レーン区切り線(流れる)
+  if (state === "play") roadOff = (roadOff + speed*dt) % 46;
+  ctx.strokeStyle = th.dash;
+  ctx.lineWidth = 3; ctx.setLineDash([22, 24]); ctx.lineDashOffset = -roadOff;
+  for (let i = 1; i < LANES; i++){
+    const lx = ROAD_L + i * laneW();
+    ctx.beginPath(); ctx.moveTo(lx, -10); ctx.lineTo(lx, H+10); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // ゲート
+  for (const g of gates) drawGate(g);
+
+  // 弾(武器ごとに見た目が変わる・派手なグロー付き)
+  for (const b of bullets){
+    const w = WEAPONS[b.wi || 0];
+    ctx.fillStyle = w.color;
+    if (w.cannon){
+      ctx.globalAlpha = 0.28;                       // 発光グロー
+      ctx.beginPath(); ctx.arc(b.x, b.y, 13, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(b.x, b.y, 7, 0, 6.283); ctx.fill();
+      ctx.fillStyle = "#a34d1e";
+      ctx.beginPath(); ctx.arc(b.x, b.y, 3.5, 0, 6.283); ctx.fill();
+    } else if (w.missile){
+      ctx.fillStyle = "#e8e8e8";
+      ctx.fillRect(b.x - 3, b.y - 14, 6, 14);
+      ctx.fillStyle = "#ff5a5a";
+      ctx.beginPath(); ctx.moveTo(b.x - 3, b.y - 14); ctx.lineTo(b.x + 3, b.y - 14); ctx.lineTo(b.x, b.y - 21); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#ffb060";
+      ctx.fillRect(b.x - 2, b.y, 4, 5 + Math.random() * 5);
+    } else {
+      if (w.pierce){                                // レーザーは光の尾を引く
+        ctx.globalAlpha = 0.3;
+        ctx.fillRect(b.x - w.bw * 2, b.y - w.bh * 1.6, w.bw * 4, w.bh * 1.6);
+        ctx.globalAlpha = 1;
+      } else if (b.wi === 1){                       // ライフルは鋭い残光
+        ctx.globalAlpha = 0.25;
+        ctx.fillRect(b.x - w.bw/2, b.y, w.bw, w.bh * 1.2);
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillRect(b.x - w.bw/2, b.y - w.bh, w.bw, w.bh);
+    }
+  }
+
+  // 敵
+  for (const en of enemies) drawEnemy(en);
+
+  // ボス(複数対応)
+  for (const bb of bosses) drawBoss(bb);
+
+  // 部隊
+  if (state !== "over") drawSquad();
+
+  // パーティクル
+  for (const p of parts){
+    ctx.globalAlpha = Math.max(p.t*2, 0);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-2, p.y-2, 4, 4);
+  }
+  ctx.globalAlpha = 1;
+
+  // 武器ごとの飛び道具(衝撃波・矢・槍・鞭・爆弾)
+  for (const wv of waves){
+    const ang = Math.atan2(wv.vy, wv.vx);
+    ctx.save();
+    ctx.translate(wv.x, wv.y);
+    if (wv.kind === "shot"){
+      // 敵の銃弾(小さなトレーサー)
+      ctx.rotate(ang);
+      ctx.fillStyle = wv.color || "#ffe680";
+      ctx.fillRect(-5, -1.6, 10, 3.2);
+      ctx.globalAlpha = 0.35;
+      ctx.fillRect(-11, -1.2, 6, 2.4);
+      ctx.globalAlpha = 1;
+    } else if (wv.kind === "bomb"){
+      // 爆弾: 黒い球+導火線の火花
+      ctx.fillStyle = "#2c3140";
+      ctx.beginPath(); ctx.arc(0, 0, 9, 0, 6.283); ctx.fill();
+      ctx.strokeStyle = "#8a5a2b"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(3, -8); ctx.quadraticCurveTo(8, -13, 6, -16); ctx.stroke();
+      ctx.fillStyle = Math.random() < 0.5 ? "#ffd76b" : "#ff9c5c";
+      ctx.beginPath(); ctx.arc(6, -16, 3, 0, 6.283); ctx.fill();
+    } else if (wv.kind === "arrow"){
+      ctx.rotate(ang);
+      ctx.strokeStyle = "#d9c9a3"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(8, 0); ctx.stroke();
+      ctx.fillStyle = "#e8eef8";
+      ctx.beginPath(); ctx.moveTo(8, -4); ctx.lineTo(15, 0); ctx.lineTo(8, 4); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#ff8a8a";
+      ctx.fillRect(-14, -3, 4, 6);
+    } else if (wv.kind === "spear"){
+      ctx.rotate(ang);
+      ctx.strokeStyle = "#b08a54"; ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.moveTo(-18, 0); ctx.lineTo(10, 0); ctx.stroke();
+      ctx.fillStyle = "#e8eef8";
+      ctx.beginPath(); ctx.moveTo(10, -5); ctx.lineTo(22, 0); ctx.lineTo(10, 5); ctx.closePath(); ctx.fill();
+    } else if (wv.kind === "whip"){
+      ctx.rotate(ang);
+      ctx.strokeStyle = "rgba(255,140,180,0.95)"; ctx.lineWidth = 4.5;
+      ctx.beginPath(); ctx.arc(-14, 0, 34, -1.2, 1.2); ctx.stroke();
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath(); ctx.arc(-26, 0, 28, -1.0, 1.0); ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.rotate(ang);
+      const R = wv.big ? 26 : 14;
+      ctx.strokeStyle = wv.big ? "rgba(255,170,90,0.95)" : "rgba(225,238,255,0.9)";
+      ctx.lineWidth = wv.big ? 5.5 : 3.5;
+      ctx.beginPath(); ctx.arc(-R * 0.4, 0, R, -1.05, 1.05); ctx.stroke();
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath(); ctx.arc(-R * 0.95, 0, R * 0.8, -0.9, 0.9); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  // 斬撃エフェクト
+  for (const s of slashes){
+    const p = 1 - s.t / 0.22;
+    ctx.save();
+    ctx.translate(s.x, s.y);
+    ctx.rotate(s.ang);
+    ctx.strokeStyle = "rgba(255,255,255," + Math.min(1, s.t * 4.5).toFixed(2) + ")";
+    ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(0, 0, 26, -1.1 + p * 1.8, -0.3 + p * 1.8); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,220,140," + Math.min(1, s.t * 3).toFixed(2) + ")";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(0, 0, 19, -1.1 + p * 1.8, -0.3 + p * 1.8); ctx.stroke();
+    ctx.restore();
+  }
+
+  // 浮かぶテキスト
+  for (const f of floats){
+    ctx.globalAlpha = Math.min(f.t, 1);
+    ctx.fillStyle = f.color;
+    ctx.font = "bold 22px -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+
+  // ボス出現予告
+  if (state === "play" && bossWarnT > 0 && Math.floor(bossWarnT * 6) % 2 === 0){
+    ctx.fillStyle = "#ff5a5a";
+    ctx.font = "bold 44px -apple-system, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("⚠ BOSS ⚠", W/2, 300);
+  }
+
+  // HUD
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#9cc4ff";
+  ctx.font = "bold 13px -apple-system, sans-serif";
+  if (player.weapons.length === 0){
+    ctx.fillText("🔫 拳銃", 14, 34);
+  } else {
+    ctx.fillText("🔫 拳銃 +", 14, 34);
+    ctx.font = "12px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,215,107,0.85)";
+    const list = player.weapons.map((hw, i) =>
+      (i === 0 ? "隊長:" : "兵:") + (WEAPONS[hw.wid].short || WEAPONS[hw.wid].name) + "(" + hw.ammo + ")");
+    ctx.fillText(list.slice(0, 3).join(" "), 14, 52);
+    if (list.length > 3) ctx.fillText(list.slice(3).join(" "), 14, 68);
+  }
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#ffd76b";
+  ctx.font = "bold 18px -apple-system, sans-serif";
+  ctx.fillText("STAGE " + stage + "/10", W - 14, 34);
+  // ボスまでの残り距離
+  if (state === "play" && !bossFight && bossWarnT <= 0){
+    ctx.font = "11px -apple-system, sans-serif";
+    ctx.fillStyle = "rgba(255,255,255,0.45)";
+    ctx.fillText("ボスまで " + Math.max(0, Math.ceil(nextBossAt - meters)) + " m", W - 14, 52);
+  }
+
+  // ステージ転換: 暗転カーテンで場面がガラッと切り替わる
+  if (state === "play" && stageBannerT > 0){
+    let a;
+    if (stageBannerT > 1.4)      a = (2.2 - stageBannerT) / 0.8;  // 閉じる
+    else if (stageBannerT > 0.7) a = 1;                            // 真っ暗(この間にテーマ切替)
+    else                         a = stageBannerT / 0.7;           // 開く
+    ctx.fillStyle = "rgba(4,6,14," + Math.min(1, Math.max(0, a)).toFixed(3) + ")";
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = Math.min(stageBannerT, 1);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#ffd76b";
+    ctx.font = "bold 46px -apple-system, sans-serif";
+    ctx.fillText("STAGE " + stage, W/2, 300);
+    ctx.globalAlpha = 1;
+  }
+
+  if (flash > 0){
+    ctx.fillStyle = "rgba(255,80,80," + (flash*0.35) + ")";
+    ctx.fillRect(-10,-10,W+20,H+20);
+  }
+  ctx.restore();
+
+  if (state === "title") drawTitle();
+  if (state === "over")  drawOver();
+  if (state === "win")   drawWin();
+}
+
+function gateColors(g){
+  if (g.op === "wpn")
+    return { fill:"rgba(255,200,60,0.22)", edge:"#ffc83c", text:"#ffdf9c" };
+  if (g.chain)
+    return { fill:"rgba(60,220,140,0.24)", edge:"#3ce88c", text:"#a9f5ce" };  // 連続パネルは緑
+  const good = (g.op === "add" || (g.op === "mul" && g.val >= 1));
+  return good
+    ? { fill:"rgba(40,120,255,0.28)", edge:"#4d8dff", text:"#8fc1ff" }
+    : { fill:"rgba(255,60,60,0.25)",  edge:"#ff5a5a", text:"#ffb0b0" };
+}
+function gateLabel(g){
+  if (g.op === "wpn") return WEAPONS[g.wid].name;
+  if (g.op === "add") return "+" + g.val.toFixed(1);
+  return "−" + g.val.toFixed(1);
+}
+function drawGate(g){
+  const w = laneW();
+  for (let i = 0; i < LANES; i++){
+    const s = g.slots[i];
+    if (!s) continue;                        // 空き枠は何も描かない
+    const x0 = ROAD_L + i * w + 2, x1 = ROAD_L + (i + 1) * w - 2;
+    const cx = (x0 + x1) / 2;
+    const fl = Math.max(0, s.flash || 0);
+    ctx.save();
+    if (fl > 0) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 2);  // 被弾中は震える
+    ctx.globalAlpha = s.used ? 0.25 : 1;
+    if (s.op === "wpn"){
+      // 武器はシルバーのアタッシュケースの上に載せて表示
+      const total = WEAPONS[s.wid].ammo + (s.bonus || 0);
+      // ケース
+      const caseGrad = ctx.createLinearGradient(cx - 22, 0, cx + 22, 0);
+      caseGrad.addColorStop(0, "#9aa4b2"); caseGrad.addColorStop(0.5, "#dfe6ee"); caseGrad.addColorStop(1, "#8a94a2");
+      ctx.fillStyle = caseGrad;
+      roundRect(cx - 22, g.y - 30, 44, 17, 4);
+      ctx.fillStyle = "#6e7885";
+      ctx.fillRect(cx - 22, g.y - 23, 44, 2);                    // 留め金ライン
+      ctx.fillRect(cx - 7, g.y - 34, 14, 4);                     // 取っ手
+      ctx.fillStyle = "#c8d2dd";
+      ctx.fillRect(cx - 17, g.y - 22, 5, 3);                     // 金具
+      ctx.fillRect(cx + 12, g.y - 22, 5, 3);
+      drawWeaponIcon(s.wid, cx, g.y - 40);                       // ケースの上に武器
+      ctx.fillStyle = "#ffdf9c";
+      ctx.font = "bold 11px -apple-system, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText((WEAPONS[s.wid].short || WEAPONS[s.wid].name) + " ×" + total, cx, g.y - 2);
+      if (fl > 0){                             // 被弾リング
+        ctx.strokeStyle = "rgba(255,255,255," + Math.min(1, fl * 3).toFixed(2) + ")";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(cx, g.y - 22, 27 + fl * 20, 0, 6.283); ctx.stroke();
+      }
+    } else {
+      const c = gateColors(s);
+      ctx.fillStyle = c.fill;
+      ctx.fillRect(x0, g.y - 26, x1 - x0, 26);
+      ctx.fillStyle = c.edge;
+      ctx.fillRect(x0, g.y - 3, x1 - x0, 3);
+      if (fl > 0){                             // 被弾中は白く光る
+        ctx.fillStyle = "rgba(255,255,255," + Math.min(0.5, fl * 1.6).toFixed(2) + ")";
+        ctx.fillRect(x0, g.y - 26, x1 - x0, 26);
+      }
+      ctx.fillStyle = c.text;
+      ctx.font = "bold " + Math.round(20 + fl * 24) + "px -apple-system, sans-serif";  // 数字がポンと跳ねる
+      ctx.textAlign = "center";
+      ctx.fillText(gateLabel(s), cx, g.y - 7);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}
+
+// 車・戦車のミニアイコン
+function drawVehicleIcon(kind, x, y){
+  ctx.save();
+  ctx.translate(x, y);
+  if (kind === "tank"){
+    ctx.fillStyle = "#4e6b4a";
+    roundRect(-16, -2, 32, 10, 4);                              // 履帯
+    ctx.fillStyle = "#2f4230";
+    ctx.beginPath(); ctx.arc(-10, 3, 3, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 3, 3, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(10, 3, 3, 0, 6.283); ctx.fill();
+    ctx.fillStyle = "#5e8257";
+    roundRect(-8, -10, 16, 9, 3);                               // 砲塔
+    ctx.fillStyle = "#7aa06f";
+    ctx.fillRect(6, -8, 16, 3);                                 // 砲身
+  } else {
+    ctx.fillStyle = "#4d8dff";
+    roundRect(-15, -6, 30, 10, 4);                              // 車体
+    ctx.fillStyle = "#8fc1ff";
+    roundRect(-7, -12, 15, 8, 3);                               // キャビン
+    ctx.fillStyle = "#1d2740";
+    ctx.beginPath(); ctx.arc(-8, 5, 4, 0, 6.283); ctx.fill();   // 車輪
+    ctx.beginPath(); ctx.arc(8, 5, 4, 0, 6.283); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// 武器のミニアイコン(ベクター描画)。(x, y)を中心に横向きで描く
+function drawWeaponIcon(wid, x, y){
+  ctx.save();
+  ctx.translate(x, y);
+  const METAL = "#d7deea", DARK = "#5a6478", ACC = WEAPONS[wid].color;
+  if (wid === 1){            // ライフル: 長い銃身+ストック+スコープ
+    ctx.fillStyle = DARK;  ctx.fillRect(-17, -1, 8, 6);           // ストック
+    ctx.fillStyle = METAL; ctx.fillRect(-10, -2, 26, 4);          // 銃身
+    ctx.fillStyle = ACC;   ctx.fillRect(-2, -6, 8, 3);            // スコープ
+    ctx.fillStyle = DARK;  ctx.fillRect(-4, 2, 4, 6);             // グリップ
+  } else if (wid === 2){     // マシンガン: 太い本体+マガジン
+    ctx.fillStyle = METAL; ctx.fillRect(-15, -3, 28, 6);
+    ctx.fillStyle = ACC;   ctx.fillRect(13, -2, 5, 4);            // マズル
+    ctx.fillStyle = DARK;  ctx.fillRect(-4, 3, 6, 9);             // マガジン
+    ctx.fillStyle = DARK;  ctx.fillRect(-13, 3, 4, 6);            // グリップ
+  } else if (wid === 3){     // ショットガン: 二連銃身
+    ctx.fillStyle = DARK;  ctx.fillRect(-17, -3, 8, 8);           // ストック
+    ctx.fillStyle = METAL; ctx.fillRect(-10, -4, 26, 3);          // 上銃身
+    ctx.fillStyle = METAL; ctx.fillRect(-10, 1, 26, 3);           // 下銃身
+    ctx.fillStyle = ACC;   ctx.fillRect(12, -4, 4, 8);            // 銃口
+  } else if (wid === 4){     // 大砲: 砲身+車輪
+    ctx.rotate(-0.35);
+    ctx.fillStyle = METAL; ctx.fillRect(-8, -6, 24, 10);          // 砲身
+    ctx.fillStyle = ACC;   ctx.fillRect(14, -7, 4, 12);           // 砲口
+    ctx.rotate(0.35);
+    ctx.fillStyle = DARK;
+    ctx.beginPath(); ctx.arc(-6, 7, 6, 0, 6.283); ctx.fill();     // 車輪
+    ctx.fillStyle = "#2c3140";
+    ctx.beginPath(); ctx.arc(-6, 7, 2.5, 0, 6.283); ctx.fill();
+  } else if (wid === 5){     // レーザー: 本体+発光する砲口+ビーム
+    ctx.fillStyle = DARK;  ctx.fillRect(-14, -3, 18, 7);
+    ctx.fillStyle = METAL; ctx.fillRect(-14, -3, 18, 3);
+    ctx.fillStyle = ACC;
+    ctx.beginPath(); ctx.arc(7, 0, 4, 0, 6.283); ctx.fill();      // 発光部
+    ctx.globalAlpha *= 0.55;
+    ctx.fillRect(10, -1.5, 10, 3);                                // ビーム
+    ctx.globalAlpha /= 0.55;
+  } else if (wid === 6){     // ロケットランチャー: 肩担ぎの発射筒
+    ctx.rotate(-0.35);
+    ctx.fillStyle = "#4e6b4a"; ctx.fillRect(-16, -5, 32, 10);     // 筒
+    ctx.fillStyle = "#2f4230"; ctx.fillRect(12, -6, 5, 12);       // 砲口リング
+    ctx.fillStyle = "#2f4230"; ctx.fillRect(-16, -6, 4, 12);      // 後端
+    ctx.fillStyle = "#ff5a5a";
+    ctx.beginPath(); ctx.moveTo(17, -4); ctx.lineTo(24, 0); ctx.lineTo(17, 4); ctx.closePath(); ctx.fill(); // ロケット先端
+    ctx.fillStyle = DARK; ctx.fillRect(-5, 5, 5, 7);              // グリップ
+    ctx.fillStyle = ACC;  ctx.fillRect(2, -8, 8, 3);              // 照準器
+    ctx.rotate(0.35);
+  } else if (wid === 7){     // 戦車(武器兼防御)
+    drawVehicleIcon("tank", 0, 0);
+  }
+  ctx.restore();
+}
+function drawEnemy(en){
+  const r = enemyRadius(en);
+  const shown = Math.min(en.count, 20);
+  const mid = (en.hpPer || 1) > 1;
+  for (let i = 0; i < shown; i++){
+    const a = i * 2.39996 + en.wob * 0.15;         // 黄金角で散らす
+    const rr = (4 + Math.sqrt(i) * 7) * 1.25;
+    const ex = en.x + Math.cos(a) * rr * 0.9;
+    const ey = en.y + Math.sin(a) * rr * 0.55 + Math.sin(en.wob + i) * 1.5;
+    // 3頭身の敵兵(大きめ表示)。中堅兵は装甲つきの重装スタイル
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.scale(mid ? 1.5 : 1.35, mid ? 1.5 : 1.35); // 中堅兵はひと回り大きい
+    ctx.fillStyle = mid ? "#20222e" : "#33201a";   // 軍パンツ
+    ctx.fillRect(-3, 2, 2.4, 5);
+    ctx.fillRect(0.6, 2, 2.4, 5);
+    ctx.fillStyle = mid ? "#3c4152" : "#6a3a30";   // 軍服(中堅は装甲色)
+    roundRect(-3.8, -4, 7.6, 6.6, 2);
+    ctx.fillStyle = mid ? "#565e78" : "#4a2a22";   // ベスト/装甲プレート
+    ctx.fillRect(-2.4, -3.4, 4.8, 5.8);
+    ctx.fillStyle = mid ? "#a8a8b8" : "#c9a884";   // 顔(中堅はフェイスガード)
+    ctx.beginPath(); ctx.arc(0, -7.6, 3.4, 0, 6.283); ctx.fill();
+    if (mid){                                      // 赤く光るバイザー(一本線)
+      ctx.fillStyle = "#ff4040";
+      ctx.fillRect(-2.7, -8.2, 5.4, 1.6);
+    } else {                                       // 赤く光る目
+      ctx.fillStyle = "#ff4040";
+      ctx.fillRect(-2.2, -8, 1.4, 1.4);
+      ctx.fillRect(0.8, -8, 1.4, 1.4);
+    }
+    ctx.fillStyle = mid ? "#1c1e28" : "#3a231e";   // ヘルメット
+    ctx.beginPath(); ctx.arc(0, -8.6, 3.7, Math.PI, 0); ctx.fill();
+    ctx.fillRect(-3.7, -9.1, 7.4, 1.6);            // つば
+    if (mid){                                       // 肩の装甲
+      ctx.fillStyle = "#565e78";
+      ctx.fillRect(-4.6, -4.2, 2, 3);
+      ctx.fillRect(2.6, -4.2, 2, 3);
+    }
+    ctx.restore();
+  }
+  // 構えた銃(プレイヤーの方へ向けている)
+  ctx.save();
+  ctx.translate(en.x + r * 0.85, en.y - 2);
+  ctx.rotate(2.6 + Math.sin(en.wob) * 0.1);      // 下(プレイヤー側)へ構える
+  ctx.fillStyle = "#2e3440";
+  ctx.fillRect(-2, -16, 4, 17);                  // 銃身
+  ctx.fillStyle = (en.gun && en.gun.color) || "#ffe680";
+  ctx.fillRect(-2, -16, 4, 3);                   // 銃口アクセント
+  ctx.fillStyle = "#1c222c";
+  ctx.fillRect(-5.5, -1, 9, 3.5);                // グリップ
+  ctx.restore();
+  // 数ラベル(中堅兵は青銀色)
+  ctx.fillStyle = mid ? "rgba(30,34,60,0.75)" : "rgba(0,0,0,0.55)";
+  roundRect(en.x - 18, en.y - r - 22, 36, 18, 8);
+  ctx.fillStyle = mid ? "#c8d2ff" : "#ffd6d6";
+  ctx.font = "bold 13px -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(en.count, en.x, en.y - r - 8);
+}
+function drawBoss(b){
+  const bob = Math.sin(b.wob) * 3;
+  const r = b.r, cx = b.x, cy = b.y + bob;
+  const SKIN = "#d8a87c", SKIN_D = "#b8875c", VEST = "#4a5a3a", VEST_D = "#38452c";
+  const flex = 1 + Math.sin(b.wob * 1.3) * 0.06;   // 力こぶがピクピク動く
+
+  // 腕(丸太のような上腕二頭筋+前腕)
+  ctx.fillStyle = SKIN;
+  ctx.beginPath(); ctx.arc(cx - r*0.98, cy + r*0.02, r*0.42*flex, 0, 6.283); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + r*0.98, cy + r*0.02, r*0.42*flex, 0, 6.283); ctx.fill();
+  ctx.fillStyle = SKIN_D;
+  ctx.beginPath(); ctx.arc(cx - r*1.08, cy + r*0.4, r*0.3, 0, 6.283); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + r*1.08, cy + r*0.4, r*0.3, 0, 6.283); ctx.fill();
+
+  // 逆三角形の胴体(タンクトップ)
+  ctx.fillStyle = VEST;
+  ctx.beginPath();
+  ctx.moveTo(cx - r*0.95, cy - r*0.45);
+  ctx.lineTo(cx + r*0.95, cy - r*0.45);
+  ctx.lineTo(cx + r*0.58, cy + r*0.95);
+  ctx.lineTo(cx - r*0.58, cy + r*0.95);
+  ctx.closePath(); ctx.fill();
+  // 肩の筋肉
+  ctx.fillStyle = SKIN;
+  ctx.beginPath(); ctx.arc(cx - r*0.76, cy - r*0.4, r*0.36, 0, 6.283); ctx.fill();
+  ctx.beginPath(); ctx.arc(cx + r*0.76, cy - r*0.4, r*0.36, 0, 6.283); ctx.fill();
+  // 胸筋と腹筋のライン
+  ctx.strokeStyle = VEST_D; ctx.lineWidth = Math.max(2, r*0.06);
+  ctx.beginPath(); ctx.moveTo(cx, cy - r*0.28); ctx.lineTo(cx, cy + r*0.6); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx - r*0.3, cy - r*0.02, r*0.28, -0.5, 1.1); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx + r*0.3, cy - r*0.02, r*0.28, Math.PI - 1.1, Math.PI + 0.5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - r*0.28, cy + r*0.32); ctx.lineTo(cx + r*0.28, cy + r*0.32); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - r*0.26, cy + r*0.55); ctx.lineTo(cx + r*0.26, cy + r*0.55); ctx.stroke();
+  // ベルト
+  ctx.fillStyle = "#2a2a30";
+  ctx.fillRect(cx - r*0.58, cy + r*0.82, r*1.16, r*0.16);
+  ctx.fillStyle = "#c8a038";
+  ctx.fillRect(cx - r*0.1, cy + r*0.79, r*0.2, r*0.22);
+
+  // 頭(太い首+短髪+ベレー帽)
+  const hy = cy - r*0.8;
+  ctx.fillStyle = SKIN_D;
+  ctx.fillRect(cx - r*0.16, cy - r*0.6, r*0.32, r*0.18);       // 太い首
+  ctx.fillStyle = SKIN;
+  ctx.beginPath(); ctx.arc(cx, hy, r*0.34, 0, 6.283); ctx.fill();
+  ctx.fillStyle = VEST_D;                                       // ベレー帽
+  ctx.beginPath(); ctx.arc(cx, hy - r*0.1, r*0.35, Math.PI, 0); ctx.fill();
+  ctx.fillRect(cx - r*0.35, hy - r*0.12, r*0.7, r*0.07);
+  ctx.fillStyle = "#c33";                                       // 帽章
+  ctx.fillRect(cx + r*0.12, hy - r*0.3, r*0.1, r*0.08);
+  // 顔: 鋭い目・食いしばった口・傷跡
+  ctx.fillStyle = "#2a1a10";
+  ctx.fillRect(cx - r*0.22, hy - r*0.04, r*0.13, r*0.06);
+  ctx.fillRect(cx + r*0.09, hy - r*0.04, r*0.13, r*0.06);
+  ctx.strokeStyle = "#2a1a10"; ctx.lineWidth = Math.max(1.5, r*0.045);
+  ctx.beginPath(); ctx.moveTo(cx - r*0.12, hy + r*0.17); ctx.lineTo(cx + r*0.12, hy + r*0.17); ctx.stroke();
+  ctx.strokeStyle = "#a05a4a"; ctx.lineWidth = Math.max(1.5, r*0.035);
+  ctx.beginPath(); ctx.moveTo(cx + r*0.17, hy - r*0.18); ctx.lineTo(cx + r*0.27, hy + r*0.02); ctx.stroke();
+  // 得物(武器タイプごとに違う)。攻撃時に振り下ろす
+  ctx.save();
+  ctx.translate(b.x + b.r*0.95, b.y + bob - Math.sin(b.wob*1.3)*6);
+  const swing = (b.swingT || 0) > 0 ? (0.25 - b.swingT) * 9 - 0.5 : -0.35 + Math.sin(b.wob) * 0.12;
+  ctx.rotate(swing);
+  const wk = Math.max(0.65, b.r / 46);
+  ctx.scale(wk, wk);
+  drawBossWeapon(b.wtype);
+  ctx.restore();
+
+  // HPバー
+  const bw = Math.max(80, Math.round(b.r * 2.2)), bx = b.x - bw/2, by = b.y + bob - b.r - 26;
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  roundRect(bx - 4, by - 4, bw + 8, 16, 7);
+  ctx.fillStyle = "#472020";
+  ctx.fillRect(bx, by, bw, 8);
+  ctx.fillStyle = "#ff5a5a";
+  ctx.fillRect(bx, by, bw * Math.max(b.hp, 0) / b.maxHp, 8);
+  ctx.fillStyle = "#ffd6d6";
+  ctx.font = "bold 12px -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("BOSS " + b.hp, b.x, by - 8);
+}
+// ボスの得物(上向きに描き、drawBoss側で回転・拡縮される)
+function drawBossWeapon(wtype){
+  if (wtype === "axe"){
+    ctx.fillStyle = "#8a5a2b";
+    ctx.fillRect(-3.5, -56, 7, 56);
+    ctx.fillStyle = "#cfd6e4";
+    ctx.beginPath(); ctx.moveTo(-3.5, -56); ctx.lineTo(-27, -44); ctx.lineTo(-3.5, -30); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#9aa4b8";
+    ctx.beginPath(); ctx.moveTo(3.5, -56); ctx.lineTo(17, -47); ctx.lineTo(3.5, -36); ctx.closePath(); ctx.fill();
+  } else if (wtype === "sword"){
+    ctx.fillStyle = "#5a4326";
+    ctx.fillRect(-2.5, -12, 5, 14);                              // 柄
+    ctx.fillStyle = "#8a5a2b";
+    ctx.fillRect(-10, -14, 20, 4);                               // 鍔
+    ctx.fillStyle = "#dfe6f2";
+    ctx.fillRect(-3.5, -58, 7, 44);                              // 刀身
+    ctx.beginPath(); ctx.moveTo(-3.5, -58); ctx.lineTo(0, -66); ctx.lineTo(3.5, -58); ctx.closePath(); ctx.fill();
+  } else if (wtype === "spear"){
+    ctx.fillStyle = "#b08a54";
+    ctx.fillRect(-2.5, -62, 5, 66);                              // 長柄
+    ctx.fillStyle = "#e8eef8";
+    ctx.beginPath(); ctx.moveTo(-6, -62); ctx.lineTo(0, -78); ctx.lineTo(6, -62); ctx.closePath(); ctx.fill();  // 穂先
+    ctx.fillStyle = "#c33";
+    ctx.fillRect(-4, -60, 8, 3);
+  } else if (wtype === "bow"){
+    ctx.strokeStyle = "#8a5a2b"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(-6, -28, 26, -1.35, 1.35); ctx.stroke();  // 弓本体
+    ctx.strokeStyle = "#e8eef8"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(-1, -53); ctx.lineTo(-1, -3); ctx.stroke();  // 弦
+    ctx.strokeStyle = "#d9c9a3"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-1, -28); ctx.lineTo(22, -28); ctx.stroke(); // 矢
+    ctx.fillStyle = "#e8eef8";
+    ctx.beginPath(); ctx.moveTo(22, -32); ctx.lineTo(29, -28); ctx.lineTo(22, -24); ctx.closePath(); ctx.fill();
+  } else if (wtype === "whip"){
+    ctx.strokeStyle = "#c9508a"; ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(14, -22, 2, -38);
+    ctx.quadraticCurveTo(-10, -50, 8, -60);
+    ctx.stroke();
+    ctx.fillStyle = "#ff8ab8";
+    ctx.beginPath(); ctx.arc(8, -60, 4, 0, 6.283); ctx.fill();   // 先端
+    ctx.fillStyle = "#5a4326";
+    ctx.fillRect(-3, -4, 6, 10);                                 // 持ち手
+  } else if (wtype === "bomb"){
+    ctx.fillStyle = "#2c3140";
+    ctx.beginPath(); ctx.arc(0, -34, 15, 0, 6.283); ctx.fill();  // 爆弾
+    ctx.fillStyle = "#464e63";
+    ctx.beginPath(); ctx.arc(-5, -39, 5, 0, 6.283); ctx.fill();  // ハイライト
+    ctx.strokeStyle = "#8a5a2b"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(5, -46); ctx.quadraticCurveTo(12, -54, 9, -60); ctx.stroke();  // 導火線
+    ctx.fillStyle = "#ffd76b";
+    ctx.beginPath(); ctx.arc(9, -60, 3.5, 0, 6.283); ctx.fill(); // 火花
+  }
+}
+
+// 3頭身の兵士(軍隊風)。大きめ表示で、構えている武器も描く
+function drawSoldier(sx, sy, wid){
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.scale(1.35, 1.35);
+  ctx.fillStyle = "#2c3320";                               // 軍パンツ
+  ctx.fillRect(-3.2, 2, 2.6, 5.4);
+  ctx.fillRect(0.6, 2, 2.6, 5.4);
+  ctx.fillStyle = "#4a5a3a";                               // オリーブの軍服
+  roundRect(-4, -4, 8, 7, 2);
+  ctx.fillStyle = "#333d28";                               // タクティカルベスト
+  ctx.fillRect(-2.4, -3.4, 4.8, 6);
+  ctx.fillStyle = "#d8b48c";                               // 顔
+  ctx.beginPath(); ctx.arc(0, -8, 3.6, 0, 6.283); ctx.fill();
+  ctx.fillStyle = "#1a2014";                               // 険しい目
+  ctx.fillRect(-2.3, -8.4, 1.6, 1.2);
+  ctx.fillRect(0.7, -8.4, 1.6, 1.2);
+  ctx.fillStyle = "#38452c";                               // ミリタリーヘルメット
+  ctx.beginPath(); ctx.arc(0, -9, 3.9, Math.PI, 0); ctx.fill();
+  ctx.fillRect(-4, -9.6, 8, 1.7);                          // つば
+  // 構えている武器
+  if (wid === undefined || wid === 0){
+    // 拳銃(小さなハンドガン)
+    ctx.save();
+    ctx.translate(4.6, -3.5);
+    ctx.rotate(-0.5);
+    ctx.fillStyle = "#2e3440";
+    ctx.fillRect(-1.1, -4.6, 2.2, 5.2);
+    ctx.fillStyle = "#ffe680";
+    ctx.fillRect(-1.1, -4.6, 2.2, 1.3);
+    ctx.restore();
+  } else {
+    // 特殊武器はミニアイコンをそのまま構える
+    ctx.save();
+    ctx.scale(0.55, 0.55);
+    drawWeaponIcon(wid, 12, -4);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+// 隊長(あなた)。金の装備で一番後方にいる。この1人が倒れたらゲームオーバー
+function drawLeader(sx, sy){
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.scale(1.45, 1.45);
+  // 体(3頭身・金装備)
+  ctx.fillStyle = "#6b5a1e";
+  ctx.fillRect(-3.4, 2, 2.8, 5.4);
+  ctx.fillRect(0.6, 2, 2.8, 5.4);
+  ctx.fillStyle = "#ffb100";
+  roundRect(-4.4, -4.5, 8.8, 7.6, 2);
+  ctx.fillStyle = "#f2c9a0";
+  ctx.beginPath(); ctx.arc(0, -8.6, 3.9, 0, 6.283); ctx.fill();
+  ctx.fillStyle = "#ffd76b";
+  ctx.beginPath(); ctx.arc(0, -9.9, 3.9, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = "#fff3c4";                 // 兜の飾り
+  ctx.fillRect(-1, -15.5, 2, 4);
+  ctx.restore();
+}
+function drawSquad(){
+  const holdersN = Math.min(player.weapons.length, player.count);
+  const soldierHolders = Math.max(0, holdersN - 1);   // 隊長以外の武器持ち
+  const others = Math.max(0, player.count - 1 - soldierHolders);  // 拳銃の一般兵
+  let rearY = player.y;                      // 隊列の最後尾
+  if (player.vehicle && player.shield > 0){
+    // 一部の兵士は戦車に乗り、残りは徒歩でついてくる
+    const tankN = Math.min(1 + Math.floor(others / 12), 3);
+    const carried = tankN * 8;
+    for (let i = 0; i < tankN; i++){
+      const vx = player.x + (i - (tankN - 1) / 2) * 52;
+      const vy = player.y;
+      for (let k = -1; k <= 1; k++){         // 乗っている兵士の頭
+        const hx = vx + k * 8;
+        ctx.fillStyle = "#f2c9a0";
+        ctx.beginPath(); ctx.arc(hx, vy - 15, 3, 0, 6.283); ctx.fill();
+        ctx.fillStyle = "#2c5cb8";
+        ctx.beginPath(); ctx.arc(hx, vy - 16, 3, Math.PI, 0); ctx.fill();
+      }
+      ctx.save();
+      ctx.translate(vx, vy);
+      ctx.scale(1.35, 1.35);
+      drawVehicleIcon("tank", 0, 0);
+      ctx.restore();
+    }
+    const walkers = Math.max(0, others - carried);
+    if (walkers > 0){
+      const f = formationData(walkers);
+      for (const p of f.pts) drawSoldier(player.x + p.x, player.y + 36 + p.y * 0.8);
+      rearY = player.y + 36 + f.maxY * 0.8;
+    } else {
+      rearY = player.y + 26;
+    }
+  } else if (others > 0){
+    const f = formationData(others);
+    for (const p of f.pts) drawSoldier(player.x + p.x, player.y + p.y * 0.8);
+    rearY = player.y + f.maxY * 0.8;
+  }
+  // 特殊武器持ちの兵士は最後尾付近に並び、その武器を構えて見える
+  for (let i = 1; i < holdersN; i++){
+    const pos = holderPos(i);
+    drawSoldier(pos.x, pos.y, player.weapons[i].wid);
+  }
+  // 隊長(あなた)は一番後方。持っている武器をアイコンで表示
+  drawLeader(player.x, rearY + 22);
+  if (holdersN > 0){
+    ctx.save();
+    ctx.translate(player.x - 13, rearY + 16);
+    ctx.scale(0.62, 0.62);
+    drawWeaponIcon(player.weapons[0].wid, 0, 0);
+    ctx.restore();
+  }
+  // 数ラベル
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  roundRect(player.x - 20, player.y - 40, 40, 20, 9);
+  ctx.fillStyle = "#cfe4ff";
+  ctx.font = "bold 14px -apple-system, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(player.count, player.x, player.y - 25);
+}
+function roundRect(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.fill();
+}
+function overlayBG(){
+  ctx.fillStyle = "rgba(8,12,28,0.78)";
+  ctx.fillRect(0,0,W,H);
+}
+function drawTitle(){
+  overlayBG();
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#8fc1ff";
+  ctx.font = "bold 40px -apple-system, sans-serif";
+  ctx.fillText("LANE BATTLE", W/2, 250);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.font = "15px -apple-system, sans-serif";
+  ctx.fillText("部隊を移動して、", W/2, 322);
+  ctx.fillText("仲間や武器を集めてボスを倒そう！", W/2, 348);
+  ctx.fillStyle = "#5df08d";
+  ctx.font = "bold 20px -apple-system, sans-serif";
+  ctx.fillText("タップでスタート", W/2, 510 + Math.sin(performance.now()/300)*4);
+}
+function drawWin(){
+  overlayBG();
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffd76b";
+  ctx.font = "bold 34px -apple-system, sans-serif";
+  ctx.fillText("MISSION COMPLETE!", W/2, 250);
+  ctx.fillStyle = "#5df08d";
+  ctx.font = "bold 24px -apple-system, sans-serif";
+  ctx.fillText("全10ステージ制覇！", W/2, 300);
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.font = "15px -apple-system, sans-serif";
+  ctx.fillText("撃破: " + killCount, W/2, 340);
+  if (overT > 0.6){
+    ctx.fillStyle = "#5df08d";
+    ctx.font = "bold 20px -apple-system, sans-serif";
+    ctx.fillText("タップで最初から", W/2, 460 + Math.sin(performance.now()/300)*4);
+  }
+}
+function drawOver(){
+  overlayBG();
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ff6b6b";
+  ctx.font = "bold 36px -apple-system, sans-serif";
+  ctx.fillText("隊長が倒れた…", W/2, 260);
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.font = "bold 26px -apple-system, sans-serif";
+  ctx.fillText("STAGE " + stage + " まで到達!", W/2, 320);
+  ctx.font = "16px -apple-system, sans-serif";
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.fillText("ベスト: STAGE " + best + " / 撃破: " + killCount, W/2, 355);
+  if (overT > 0.6){
+    ctx.fillStyle = "#5df08d";
+    ctx.font = "bold 20px -apple-system, sans-serif";
+    ctx.fillText("タップでリトライ", W/2, 460 + Math.sin(performance.now()/300)*4);
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.font = "13px -apple-system, sans-serif";
+    ctx.fillText("STAGE " + stage + " から再開", W/2, 492);
+  }
+}
+
+// ================= メインループ =================
+let last = performance.now();
+function loop(now){
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 0.05) dt = 0.05;
+  update(dt);
+  draw(dt);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
