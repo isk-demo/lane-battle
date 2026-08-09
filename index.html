@@ -198,20 +198,20 @@ function movePlayer(x, y){
 let _fCache = { n: -1 };
 function formationData(n){
   if (_fCache.n === n) return _fCache;
-  // 3列+3列の6列隊形。中央(隊長の正面)は常に空けておく
-  const colX = [-11, 11, -32, 32, -53, 53];  // 中央寄りから埋まる
+  // 3列+3列の6列隊形(2倍サイズ)。中央(隊長の正面)は常に空けておく
+  const colX = [-22, 22, -64, 64, -106, 106];  // 中央寄りから埋まる
   const pts = [];
   let i = 0, row = 0;
   while (i < n){
     const inRow = Math.min(n - i, 6);
     for (let k = 0; k < inRow; k++){
-      pts.push({ x: colX[k], y: row * 19 });
+      pts.push({ x: colX[k], y: row * 38 });
       i++;
     }
     row++;
   }
-  let half = 13, maxY = 0;
-  for (const p of pts){ half = Math.max(half, Math.abs(p.x) + 9.5); maxY = Math.max(maxY, p.y); }
+  let half = 20, maxY = 0;
+  for (const p of pts){ half = Math.max(half, Math.abs(p.x) + 19); maxY = Math.max(maxY, p.y); }
   _fCache = { n, s: 1, pts, half, maxY };
   return _fCache;
 }
@@ -226,14 +226,14 @@ function squadRearY(){
     const walkers = Math.max(0, others - tankN * 8);
     return walkers > 0 ? player.y + 36 + formationData(walkers).maxY * 0.8 + 20 : player.y + 46;
   }
-  return others > 0 ? player.y + formationData(others).maxY * 0.8 + 20 : player.y + 20;
+  return others > 0 ? player.y + formationData(others).maxY * 0.8 + 40 : player.y + 40;
 }
 // i番目の武器の持ち手の位置(0=隊長が最後尾、以降の兵士はその少し前)
 function holderPos(i){
   const ry = squadRearY();
   if (i === 0) return { x: player.x, y: ry };
   const col = (i - 1) % 3, row = Math.floor((i - 1) / 3);
-  return { x: player.x + (col - 1) * 27, y: ry - 21 - row * 19 };
+  return { x: player.x + (col - 1) * 54, y: ry - 42 - row * 38 };
 }
 
 // ================= スポーン =================
@@ -314,6 +314,23 @@ function makeEnemy(forceMid){
 }
 function addSlash(x, y){
   slashes.push({ x, y, t: 0.22, ang: Math.random() * 0.8 - 0.4 });
+}
+// 手榴弾の爆発: 半径内の敵・ボス全員にダメージ
+function explodeGrenade(x, y){
+  burst(x, y, "#a8d86b", 22);
+  burst(x, y, "#ffd76b", 14);
+  shake = Math.max(shake, 0.18);
+  for (const en of enemies){
+    if (en.count <= 0) continue;
+    if (Math.hypot(en.x - x, en.y - y) < 95){
+      const d = Math.min(5, en.count);
+      en.count -= d; killCount += d;
+      burst(en.x, en.y, "#ffb3b3", 5);
+    }
+  }
+  for (const bb of bosses){
+    if (Math.hypot(bb.x - x, bb.y - y) < 95 + bb.r * 0.5) bb.hp -= 5;
+  }
 }
 // 武器の衝撃波: 兵士に届くと兵士が減る
 function updateWaves(dt){
@@ -475,7 +492,11 @@ function update(dt){
     let fx = pos.x;
     if (w.jitter) fx += (Math.random() - 0.5) * 6;
     const isLdr = (i === 0);                       // 隊長の武器の弾だけがレーンを増減できる
-    if (w.spread){
+    if (w.pierce){                                 // レーザーは斜めに発射(壁で反射する)
+      hw.dir = -(hw.dir || 1);
+      bullets.push({ x: fx, y: pos.y - 16, vx: hw.dir * 260, vy: -w.bspd * 0.75,
+        dmg: w.dmg, wi: hw.wid, pierce: w.pierce, ldr: isLdr });
+    } else if (w.spread){
       for (const vx of [-90, 0, 90])
         bullets.push({ x: fx, y: pos.y - 16, vx, vy: -w.bspd, dmg: w.dmg, wi: hw.wid, pierce: 0, ldr: isLdr });
     } else {
@@ -496,8 +517,26 @@ function update(dt){
   for (const b of bullets){
     b.y += b.vy * dt;
     b.x += (b.vx || 0) * dt;
+    const bw2 = WEAPONS[b.wi || 0];
+    // レーザーは道路の壁で反射する
+    if (bw2.pierce){
+      if (b.x < ROAD_L + 3){
+        b.x = ROAD_L + 3 + (ROAD_L + 3 - b.x);
+        b.vx = Math.abs(b.vx || 260);
+        burst(ROAD_L + 3, b.y, "#8affe9", 4);
+      } else if (b.x > ROAD_R - 3){
+        b.x = ROAD_R - 3 - (b.x - (ROAD_R - 3));
+        b.vx = -Math.abs(b.vx || 260);
+        burst(ROAD_R - 3, b.y, "#8affe9", 4);
+      }
+    }
+    // 手榴弾は一定距離飛ぶと空中で爆発(範囲攻撃)
+    if (bw2.grenade){
+      b.trav = (b.trav || 0) + Math.hypot(b.vx || 0, b.vy) * dt;
+      if (!b.dead && b.trav > 270){ explodeGrenade(b.x, b.y); b.dead = true; }
+    }
     // ロケットは煙の尾を引く
-    if (b.wi && WEAPONS[b.wi].missile && Math.random() < 0.45)
+    if (bw2.missile && Math.random() < 0.45)
       parts.push({ x: b.x + (Math.random()-0.5)*4, y: b.y + 8, vx: (Math.random()-0.5)*20, vy: 50, t: 0.35, color: "#9aa4b2" });
   }
 
@@ -580,6 +619,11 @@ function update(dt){
         if (b.lastHit === en) continue;                       // 貫通弾が同じ群れを連続ヒットしない
         b.lastHit = en;
         const bw = WEAPONS[b.wi || 0];
+        if (bw.grenade){                                      // 手榴弾は着弾点で範囲爆発
+          b.dead = true;
+          explodeGrenade(b.x, b.y);
+          continue;
+        }
         // 中堅兵は1人あたりHP3(蓄積ダメージで倒す)
         en.hpBuf = (en.hpBuf || 0) + (b.dmg || 1);
         while (en.hpBuf >= (en.hpPer || 1) && en.count > 0){
@@ -587,15 +631,13 @@ function update(dt){
           en.count--;
           killCount++;
         }
-        burst(b.x, en.y + r*0.4, "#ffb3b3", (bw.cannon || bw.missile || bw.grenade) ? 12 : 3);
-        if (bw.missile || bw.grenade){                        // ロケラン・手榴弾は周囲の群れにも爆風
-          burst(b.x, b.y, bw.grenade ? "#a8d86b" : "#ff9c5c", 16);
-          const blastR = bw.grenade ? 75 : 90;
-          const blastD = bw.grenade ? 3 : 4;
+        burst(b.x, en.y + r*0.4, "#ffb3b3", (bw.cannon || bw.missile) ? 12 : 3);
+        if (bw.missile){                                      // ロケランは周囲の群れにも爆風
+          burst(b.x, b.y, "#ff9c5c", 16);
           for (const other of enemies){
             if (other === en || other.count <= 0) continue;
-            if (Math.hypot(other.x - en.x, other.y - en.y) < blastR){
-              const d2 = Math.min(blastD, other.count);
+            if (Math.hypot(other.x - en.x, other.y - en.y) < 90){
+              const d2 = Math.min(4, other.count);
               other.count -= d2; killCount += d2;
             }
           }
@@ -620,7 +662,7 @@ function updateFx(dt){
   shake = Math.max(0, shake - dt * 1.6);
   flash = Math.max(0, flash - dt * 2);
 }
-function enemyRadius(en){ return 20 + Math.min(en.count, 40) * 1.0; }
+function enemyRadius(en){ return 30 + Math.min(en.count, 40) * 1.5; }
 
 // ================= ボス =================
 // ダメージはまずシールド(車・戦車)が受け止める
@@ -755,9 +797,11 @@ function updateBoss(dt){
     for (const bl of bullets){
       if (bl.dead || b.hp <= 0) continue;
       if (Math.abs(bl.x - b.x) < b.r && Math.abs(bl.y - b.y) < b.r){
-        bl.dead = true; b.hp -= (bl.dmg || 1);
+        bl.dead = true;
         const bw = WEAPONS[bl.wi || 0];
-        if (bw.cannon || bw.missile || bw.grenade) burst(bl.x, bl.y, bw.grenade ? "#a8d86b" : "#ff9c5c", 10);
+        if (bw.grenade){ explodeGrenade(bl.x, bl.y); continue; }  // 手榴弾はボスにも範囲爆発
+        b.hp -= (bl.dmg || 1);
+        if (bw.cannon || bw.missile) burst(bl.x, bl.y, "#ff9c5c", 10);
         else if (Math.random() < 0.3) burst(bl.x, bl.y, "#ffd27a", 2);
       }
     }
@@ -855,12 +899,17 @@ function draw(dt){
       ctx.beginPath(); ctx.moveTo(b.x - 3, b.y - 14); ctx.lineTo(b.x + 3, b.y - 14); ctx.lineTo(b.x, b.y - 21); ctx.closePath(); ctx.fill();
       ctx.fillStyle = "#ffb060";
       ctx.fillRect(b.x - 2, b.y, 4, 5 + Math.random() * 5);
+    } else if (w.pierce){                           // レーザー: 進行方向を向いて飛び、壁で反射
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(Math.atan2(b.vy, b.vx || 0) + Math.PI / 2);
+      ctx.globalAlpha = 0.3;
+      ctx.fillRect(-w.bw * 2, 0, w.bw * 4, w.bh * 1.6);
+      ctx.globalAlpha = 1;
+      ctx.fillRect(-w.bw / 2, -w.bh, w.bw, w.bh * 2);
+      ctx.restore();
     } else {
-      if (w.pierce){                                // レーザーは光の尾を引く
-        ctx.globalAlpha = 0.3;
-        ctx.fillRect(b.x - w.bw * 2, b.y - w.bh * 1.6, w.bw * 4, w.bh * 1.6);
-        ctx.globalAlpha = 1;
-      } else if (b.wi === 1){                       // ライフルは鋭い残光
+      if (b.wi === 1){                              // ライフルは鋭い残光
         ctx.globalAlpha = 0.25;
         ctx.fillRect(b.x - w.bw/2, b.y, w.bw, w.bh * 1.2);
         ctx.globalAlpha = 1;
@@ -1194,13 +1243,13 @@ function drawEnemy(en){
   const mid = (en.hpPer || 1) > 1;
   for (let i = 0; i < shown; i++){
     const a = i * 2.39996 + en.wob * 0.15;         // 黄金角で散らす
-    const rr = (4 + Math.sqrt(i) * 7) * 1.25;
+    const rr = (4 + Math.sqrt(i) * 7) * 2.5;
     const ex = en.x + Math.cos(a) * rr * 0.9;
     const ey = en.y + Math.sin(a) * rr * 0.55 + Math.sin(en.wob + i) * 1.5;
-    // 3頭身の敵兵(大きめ表示)。中堅兵は装甲つきの重装スタイル
+    // 3頭身の敵兵(2倍サイズ)。中堅兵は装甲つきの重装スタイル
     ctx.save();
     ctx.translate(ex, ey);
-    ctx.scale(mid ? 1.5 : 1.35, mid ? 1.5 : 1.35); // 中堅兵はひと回り大きい
+    ctx.scale(mid ? 3.0 : 2.7, mid ? 3.0 : 2.7);   // 中堅兵はひと回り大きい
     ctx.fillStyle = mid ? "#20222e" : "#33201a";   // 軍パンツ
     ctx.fillRect(-3, 2, 2.4, 5);
     ctx.fillRect(0.6, 2, 2.4, 5);
@@ -1388,7 +1437,7 @@ function drawBossWeapon(wtype){
 function drawSoldier(sx, sy, wid){
   ctx.save();
   ctx.translate(sx, sy);
-  ctx.scale(1.35, 1.35);
+  ctx.scale(2.7, 2.7);
   ctx.fillStyle = "#2c3320";                               // 軍パンツ
   ctx.fillRect(-3.2, 2, 2.6, 5.4);
   ctx.fillRect(0.6, 2, 2.6, 5.4);
@@ -1428,7 +1477,7 @@ function drawSoldier(sx, sy, wid){
 function drawLeader(sx, sy){
   ctx.save();
   ctx.translate(sx, sy);
-  ctx.scale(1.45, 1.45);
+  ctx.scale(2.9, 2.9);
   // 体(3頭身・金装備)
   ctx.fillStyle = "#6b5a1e";
   ctx.fillRect(-3.4, 2, 2.8, 5.4);
