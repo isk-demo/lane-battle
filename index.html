@@ -40,6 +40,20 @@ fit();
 // ================= 状態 =================
 const ROAD_L = 30, ROAD_R = W - 30;         // 道路の左右端
 const LANES = 3;                             // ゲートの枠数
+
+// ===== 奥行き(遠近法)。ロジックは平面座標のまま、描画だけ変換する =====
+// 手前(画面下)が広く、奥(画面上)が狭い
+function pf(y){ return 0.55 + 0.45 * Math.max(0, Math.min(1, y / H)); }  // 奥行き縮尺
+function px(x, y){ return W/2 + (x - W/2) * pf(y); }                     // X座標の射影
+// (cx, cy)を基準に絶対座標の描画コードをそのまま遠近変換するラッパー
+function beginPersp(cx, cy){
+  const s = pf(cy);
+  ctx.save();
+  ctx.translate(px(cx, cy), cy);
+  ctx.scale(s, s);
+  ctx.translate(-cx, -cy);
+  return s;
+}
 function laneW(){ return (ROAD_R - ROAD_L) / LANES; }
 function laneAt(x){ return Math.max(0, Math.min(LANES - 1, Math.floor((x - ROAD_L) / laneW()))); }
 
@@ -324,6 +338,7 @@ function explodeGrenade(x, y){
   shake = Math.max(shake, 0.18);
   for (const en of enemies){
     if (en.count <= 0) continue;
+    if (en.y - enemyRadius(en) < 0) continue;       // 完全出現前の敵には爆風も無効
     if (Math.hypot(en.x - x, en.y - y) < 95){
       const d = Math.min(5, en.count);
       en.count -= d; killCount += d;
@@ -331,6 +346,7 @@ function explodeGrenade(x, y){
     }
   }
   for (const bb of bosses){
+    if (bb.y - bb.r < 0) continue;                  // 完全出現前のボスにも無効
     if (Math.hypot(bb.x - x, bb.y - y) < 95 + bb.r * 0.5) bb.hp -= 5;
   }
 }
@@ -613,10 +629,11 @@ function update(dt){
         shake = Math.max(shake, 0.3);
       }
     }
-    // 弾との当たり
+    // 弾との当たり(敵が完全に画面に入ってから当たる)
     for (const b of bullets){
       if (b.dead || en.count <= 0) continue;
       const r = enemyRadius(en);
+      if (en.y - r < 0) break;                      // まだ全身が見えていない敵は無敵
       if (Math.abs(b.x - en.x) < r && Math.abs(b.y - en.y) < r){
         if (b.lastHit === en) continue;                       // 貫通弾が同じ群れを連続ヒットしない
         b.lastHit = en;
@@ -638,6 +655,7 @@ function update(dt){
           burst(b.x, b.y, "#ff9c5c", 16);
           for (const other of enemies){
             if (other === en || other.count <= 0) continue;
+            if (other.y - enemyRadius(other) < 0) continue;
             if (Math.hypot(other.x - en.x, other.y - en.y) < 90){
               const d2 = Math.min(4, other.count);
               other.count -= d2; killCount += d2;
@@ -795,9 +813,10 @@ function updateBoss(dt){
       if (b.waveCd <= 0) fireBossWave(b);
     }
 
-    // 弾との当たり
+    // 弾との当たり(ボスが完全に画面に入ってから当たる)
     for (const bl of bullets){
       if (bl.dead || b.hp <= 0) continue;
+      if (b.y - b.r < 0) break;                     // まだ全身が見えていないボスは無敵
       if (Math.abs(bl.x - b.x) < b.r && Math.abs(bl.y - b.y) < b.r){
         bl.dead = true;
         const bw = WEAPONS[bl.wi || 0];
@@ -850,19 +869,26 @@ function draw(dt){
   bg.addColorStop(0, th.bgTop); bg.addColorStop(1, th.bgBot);
   ctx.fillStyle = bg; ctx.fillRect(-10,-10,W+20,H+20);
 
-  // 道路
+  // 道路(遠近法: 手前が広く、奥が狭い台形)
   ctx.fillStyle = th.road;
-  ctx.fillRect(ROAD_L, -10, ROAD_R-ROAD_L, H+20);
-  ctx.fillStyle = th.edge;
-  ctx.fillRect(ROAD_L-4, -10, 4, H+20);
-  ctx.fillRect(ROAD_R,  -10, 4, H+20);
-  // レーン区切り線(流れる)
+  ctx.beginPath();
+  ctx.moveTo(px(ROAD_L, 0), 0);
+  ctx.lineTo(px(ROAD_R, 0), 0);
+  ctx.lineTo(ROAD_R, H);
+  ctx.lineTo(ROAD_L, H);
+  ctx.closePath(); ctx.fill();
+  // 路肩ライン
+  ctx.strokeStyle = th.edge;
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(px(ROAD_L, 0), 0); ctx.lineTo(ROAD_L, H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px(ROAD_R, 0), 0); ctx.lineTo(ROAD_R, H); ctx.stroke();
+  // レーン区切り線(奥に向かって収束する)
   if (state === "play") roadOff = (roadOff + speed*dt) % 46;
   ctx.strokeStyle = th.dash;
   ctx.lineWidth = 3; ctx.setLineDash([22, 24]); ctx.lineDashOffset = -roadOff;
   for (let i = 1; i < LANES; i++){
     const lx = ROAD_L + i * laneW();
-    ctx.beginPath(); ctx.moveTo(lx, -10); ctx.lineTo(lx, H+10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px(lx, 0), 0); ctx.lineTo(lx, H); ctx.stroke();
   }
   ctx.setLineDash([]);
 
@@ -872,6 +898,7 @@ function draw(dt){
   // 弾(武器ごとに見た目が変わる・派手なグロー付き)
   for (const b of bullets){
     const w = WEAPONS[b.wi || 0];
+    beginPersp(b.x, b.y);
     ctx.fillStyle = w.color;
     if (w.cannon){
       ctx.globalAlpha = 0.28;                       // 発光グロー
@@ -918,6 +945,7 @@ function draw(dt){
       }
       ctx.fillRect(b.x - w.bw/2, b.y - w.bh, w.bw, w.bh);
     }
+    ctx.restore();                                  // 遠近変換おわり
   }
 
   // 敵
@@ -933,7 +961,8 @@ function draw(dt){
   for (const p of parts){
     ctx.globalAlpha = Math.max(p.t*2, 0);
     ctx.fillStyle = p.color;
-    ctx.fillRect(p.x-2, p.y-2, 4, 4);
+    const pps = pf(p.y);
+    ctx.fillRect(px(p.x, p.y) - 2 * pps, p.y - 2 * pps, 4 * pps, 4 * pps);
   }
   ctx.globalAlpha = 1;
 
@@ -941,7 +970,9 @@ function draw(dt){
   for (const wv of waves){
     const ang = Math.atan2(wv.vy, wv.vx);
     ctx.save();
-    ctx.translate(wv.x, wv.y);
+    const wps = pf(wv.y);
+    ctx.translate(px(wv.x, wv.y), wv.y);
+    ctx.scale(wps, wps);
     if (wv.kind === "shot"){
       // 敵の銃弾(小さなトレーサー)
       ctx.rotate(ang);
@@ -996,7 +1027,9 @@ function draw(dt){
   for (const s of slashes){
     const p = 1 - s.t / 0.22;
     ctx.save();
-    ctx.translate(s.x, s.y);
+    const sps = pf(s.y);
+    ctx.translate(px(s.x, s.y), s.y);
+    ctx.scale(sps, sps);
     ctx.rotate(s.ang);
     ctx.strokeStyle = "rgba(255,255,255," + Math.min(1, s.t * 4.5).toFixed(2) + ")";
     ctx.lineWidth = 4;
@@ -1013,7 +1046,7 @@ function draw(dt){
     ctx.fillStyle = f.color;
     ctx.font = "bold 22px -apple-system, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(f.text, f.x, f.y);
+    ctx.fillText(f.text, px(f.x, f.y), f.y);
   }
   ctx.globalAlpha = 1;
 
@@ -1102,6 +1135,12 @@ function drawGate(g){
     const cx = (x0 + x1) / 2;
     const fl = Math.max(0, s.flash || 0);
     ctx.save();
+    {  // 遠近変換(奥ほど小さく・中央に寄る)
+      const ps = pf(g.y);
+      ctx.translate(px(cx, g.y), g.y);
+      ctx.scale(ps, ps);
+      ctx.translate(-cx, -g.y);
+    }
     if (fl > 0) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 2);  // 被弾中は震える
     ctx.globalAlpha = s.used ? 0.25 : 1;
     if (s.op === "wpn"){
@@ -1243,6 +1282,8 @@ function drawEnemy(en){
   const r = enemyRadius(en);
   const shown = Math.min(en.count, 20);
   const mid = (en.hpPer || 1) > 1;
+  beginPersp(en.x, en.y);
+  if (en.y - r < 0) ctx.globalAlpha = 0.55;      // 完全に画面に入るまでは半透明(無敵)
   for (let i = 0; i < shown; i++){
     const a = i * 2.39996 + en.wob * 0.15;         // 黄金角で散らす
     const rr = (4 + Math.sqrt(i) * 7) * 2.5;
@@ -1297,8 +1338,12 @@ function drawEnemy(en){
   ctx.font = "bold 13px -apple-system, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(en.count, en.x, en.y - r - 8);
+  ctx.globalAlpha = 1;
+  ctx.restore();                                 // 遠近変換おわり
 }
 function drawBoss(b){
+  beginPersp(b.x, b.y);
+  if (b.y - b.r < 0) ctx.globalAlpha = 0.55;     // 完全に画面に入るまでは半透明(無敵)
   const bob = Math.sin(b.wob) * 3;
   const r = b.r, cx = b.x, cy = b.y + bob;
   const SKIN = "#d8a87c", SKIN_D = "#b8875c", VEST = "#4a5a3a", VEST_D = "#38452c";
@@ -1378,6 +1423,8 @@ function drawBoss(b){
   ctx.font = "bold 12px -apple-system, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("BOSS " + b.hp, b.x, by - 8);
+  ctx.globalAlpha = 1;
+  ctx.restore();                                 // 遠近変換おわり
 }
 // ボスの得物(上向きに描き、drawBoss側で回転・拡縮される)
 function drawBossWeapon(wtype){
@@ -1495,6 +1542,7 @@ function drawLeader(sx, sy){
   ctx.restore();
 }
 function drawSquad(){
+  beginPersp(player.x, player.y);
   const holdersN = Math.min(player.weapons.length, player.count);
   const soldierHolders = Math.max(0, holdersN - 1);   // 隊長以外の武器持ち
   const others = Math.max(0, player.count - 1 - soldierHolders);  // 拳銃の一般兵
@@ -1553,6 +1601,7 @@ function drawSquad(){
   ctx.font = "bold 14px -apple-system, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(player.count, player.x, player.y - 25);
+  ctx.restore();                                 // 遠近変換おわり
 }
 function roundRect(x, y, w, h, r){
   ctx.beginPath();
