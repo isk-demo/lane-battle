@@ -101,7 +101,7 @@ let chainN, chainLane, gateRowsThisStage;
 let resumeStage = 1;                         // ゲームオーバーになったステージから再開する
 
 function reset(){
-  player  = { x: W/2, y: 570, count: 1, weapons: [], shield: 0, vehicle: null };
+  player  = { x: W/2, y: 570, count: 1, weapons: [], shield: 0, vehicle: null, hp: 3, inv: 0 };
   chainN = 0; chainLane = 0; gateRowsThisStage = 0;
   bullets = [];
   gates   = [];
@@ -260,8 +260,9 @@ function randMul(){
   // ×は常に1以上(×1.00〜×1.20)。マイナス方向の役割は÷が担う
   return Math.round((1 + Math.random() * 0.2) * 100) / 100;
 }
-function addVal(){
-  return 1;                                  // +パネルは必ず+1から(撃って育てる)
+function gateVal(){
+  // レーンの数字 = 現在の人数 × 1〜20倍(ランダム)。常に整数
+  return Math.max(1, player.count) * (1 + Math.floor(Math.random() * 20));
 }
 function randWpn(){
   const r = Math.random();
@@ -277,10 +278,9 @@ function randWpn(){
 function makeGatePair(){
   function one(){
     const r = Math.random();
-    if (r < 0.38) return { op:"add", val: addVal(), used:false, hits:0 };
-    if (r < 0.755) return { op:"wpn", wid: randWpn(), val: 0, used:false, hits:0 };  // 出現率さらに5割アップ
-    // マイナスは従来の2倍以上
-    return { op:"sub", val: 2 * (3 + Math.floor(Math.random()*scaledVal(6, 45))) + 1, used:false, hits:0 };
+    if (r < 0.40) return { op:"add", val: gateVal(), used:false, hits:0 };
+    if (r < 0.70) return { op:"wpn", wid: randWpn(), val: 0, used:false, hits:0 };
+    return { op:"sub", val: gateVal(), used:false, hits:0 };
   }
   // 3枠それぞれに「ある/ない」のランダム性を持たせる
   const slots = [];
@@ -289,20 +289,20 @@ function makeGatePair(){
   // 逃げ道ゼロ(全枠が埋まっていて全部マイナス系)にならないように
   const bad = g => g && (g.op === "sub");
   if (slots.every(s => bad(s))){
-    slots[Math.floor(Math.random() * LANES)] = { op:"add", val: addVal(), used:false, hits:0 };
+    slots[Math.floor(Math.random() * LANES)] = { op:"add", val: gateVal(), used:false, hits:0 };
   }
   // 武器は1行に1つまで
   let seenW = false;
   for (let i = 0; i < LANES; i++){
     if (slots[i] && slots[i].op === "wpn"){
-      if (seenW) slots[i] = { op:"add", val: addVal(), used:false, hits:0 };
+      if (seenW) slots[i] = { op:"add", val: gateVal(), used:false, hits:0 };
       seenW = true;
     }
   }
   // ステージ最初の行はマイナス系を出さない(プラスから始まる)
   if (gateRowsThisStage === 0){
     for (let i = 0; i < LANES; i++){
-      if (bad(slots[i])) slots[i] = { op:"add", val: addVal(), used:false, hits:0 };
+      if (bad(slots[i])) slots[i] = { op:"add", val: gateVal(), used:false, hits:0 };
     }
   }
   gateRowsThisStage++;
@@ -437,15 +437,14 @@ function applyGate(g){
   if (g.op === "add") player.count += Math.floor(g.val);   // 実際の増減は整数部分
   if (g.op === "sub") player.count -= Math.floor(g.val);
   if (g.op === "wpn"){
-    const total = WEAPONS[g.wid].ammo + (g.bonus || 0);
-    // 1人1丁: 最初の1丁は隊長、次からは兵士が1人ずつ装備
+    // 1人1丁: 最初の1丁は隊長、次からは兵士が1人ずつ装備。弾数は無限(持ち手が倒れるまで)
     const cap = Math.min(player.count, 8);
     while (player.weapons.length >= cap && player.weapons.length > 0)
       player.weapons.shift();                // 持ち手が足りなければ一番古い武器と交換
-    player.weapons.push({ wid: g.wid, ammo: total, t: 0 });
+    player.weapons.push({ wid: g.wid, t: 0 });
     const who = player.weapons.length === 1 ? "隊長" : "兵士";
     floats.push({ x: player.x, y: player.y - 70,
-      text: who + "が" + WEAPONS[g.wid].name + "を装備! (" + total + "発)", color: "#ffd76b", t: 1.4 });
+      text: who + "が" + WEAPONS[g.wid].name + "を装備!", color: "#ffd76b", t: 1.4 });
   }
   player.count = Math.min(player.count, 999);
   if (player.count <= 0){
@@ -470,6 +469,16 @@ function update(dt){
   speed = Math.min(48 + effDiff() * 0.16, 96);   // 5割減速
   if (stageBannerT > 0) stageBannerT -= dt;
   const dy = speed * dt;
+
+  player.inv = Math.max(0, player.inv - dt);     // 被弾後の無敵時間を減らす
+  // 持ち手が倒れた武器は失われる(武器の数 ≦ 人数、最大8)
+  const wcap = Math.min(Math.max(player.count, 0), 8);
+  if (player.weapons.length > wcap){
+    const lost = player.weapons.length - wcap;
+    player.weapons.length = wcap;
+    floats.push({ x: player.x, y: player.y - 70,
+      text: "武器を" + lost + "つ失った…", color: "#ffb0b0", t: 1.1 });
+  }
 
   spawnStep(dy);
   updateBoss(dt);
@@ -524,11 +533,7 @@ function update(dt){
     const heavy = w.cannon || w.missile;
     burst(fx, pos.y - 22, w.color, heavy ? 10 : (w.spread ? 6 : 3));
     if (heavy) shake = Math.max(shake, 0.07);
-    hw.ammo--;
-    if (hw.ammo <= 0){
-      floats.push({ x: player.x, y: player.y - 70, text: WEAPONS[hw.wid].name + " 弾切れ", color: "#ffb0b0", t: 1.2 });
-      player.weapons.splice(i, 1);
-    }
+    // 弾数は無限: 持ち手が倒れるまで撃ち続けられる
   }
 
   // 弾
@@ -562,34 +567,27 @@ function update(dt){
   for (const g of gates){
     g.y += dy;
     for (const s of g.slots) if (s){ if (s.flash > 0) s.flash -= dt; if (s.cool > 0) s.cool -= dt; }
-    // 弾との当たり: +/−の増減は隊長の弾のみ。武器の弾数は誰の弾でも一律で増える
+    // 弾との当たり: +/−の増減は隊長の弾のみ(整数単位で変化)。武器の宝箱は撃っても変化しない
     for (const b of bullets){
       if (b.dead || g.y < b.y - 26 || g.y > b.y + 6) continue;
       const side = g.slots[laneAt(b.x)];
       if (!side || side.used) continue;
-      if (side.op !== "wpn" && !b.ldr) continue;   // 数字パネルは隊長の弾だけが反応(他は素通り)
+      if (side.op === "wpn") continue;             // 武器の宝箱は素通り
+      if (!b.ldr) continue;                        // 数字は隊長の弾だけが反応(他は素通り)
       b.dead = true;
       const d = (b.dmg || 1);
-      side.flash = 0.22;                        // 被弾中のバーは光って震える
+      side.flash = 0.22;                           // 被弾中の宝箱は光って震える
       if (side.op === "add"){
-        if (!side.chain){                                         // 緑の連続パネルは撃っても育たない
+        if (!side.chain){                          // 緑の連続パネルは撃っても育たない
           side.grow = (side.grow || 0) + d;
-          while (side.grow >= 2){                                 // 2ヒットごとに0.1(育ちを半減)
-            side.grow -= 2;
-            side.val = Math.round((side.val + 0.1) * 10) / 10;
+          while (side.grow >= 3){                  // 3ヒットごとに数字が育つ
+            side.grow -= 3;
+            side.val += Math.max(1, Math.round(Math.max(1, player.count) * 0.3));
           }
         }
       } else if (side.op === "sub"){
-        side.val = Math.round((side.val - 0.1 * d) * 10) / 10;   // 当たるたび0.1ずつ弱まる
-        if (side.val <= 0){ side.op = "add"; side.val = 0.1; }   // 撃ち続けるとプラスに反転!
-      } else {
-        side.hits += d;
-        while (side.hits >= 8){
-          side.hits -= 8;
-          if (side.op === "wpn")
-            side.bonus = (side.bonus || 0)
-              + Math.max(1, Math.round(WEAPONS[side.wid].ammo * 0.12)); // 全員の弾で一律に弾数が増える
-        }
+        side.val -= Math.max(1, Math.round(side.val * 0.06));    // 当たるたび整数で弱まる
+        if (side.val <= 0){ side.op = "add"; side.val = Math.max(1, player.count); } // 撃ち続けるとプラスに反転!
       }
     }
     // 通過判定(自分のいる枠だけが発動。空き枠なら何も起きない)
@@ -621,12 +619,31 @@ function update(dt){
       en.y += dy * 0.9 + Math.max(0, dyc / dl) * charge * dt;
       // 体当たり!
       if (Math.abs(en.y - player.y) < 28 && Math.abs(en.x - player.x) < er + squadHalfWidth()){
-        const dmg = Math.ceil(en.count * 0.6);
         burst(en.x, en.y, "#ff6b6b", 16);
         addSlash(player.x, player.y - 26);
-        damagePlayer(dmg, "#ff6b6b");
+        damagePlayer(1, "#ff6b6b");
         en.count = 0;                              // ぶつかった敵は消滅
         shake = Math.max(shake, 0.3);
+      }
+      // 銃撃: 持っている武器でプレイヤーを狙い撃ち(完全に画面に入ってから)
+      if (en.y - er > 0 && en.y < player.y - 70){
+        en.gunT -= dt;
+        if (en.gunT <= 0){
+          const gn = en.gun;
+          en.gunT = gn.cd + Math.random() * 0.4;
+          const shooters = Math.min(gn.n, en.count);
+          for (let k = 0; k < shooters; k++){
+            const a = k * 2.399963;                // 群れの中の別々の兵が撃つ
+            const rr = Math.sqrt(k + 0.5) * 9;
+            const sxp = en.x + Math.cos(a) * rr, syp = en.y + Math.sin(a) * rr * 0.6;
+            const tx = player.x + (Math.random() - 0.5) * 90;
+            const dxs = tx - sxp, dys = player.y - syp;
+            const dls = Math.hypot(dxs, dys) || 1;
+            waves.push({ x: sxp, y: syp, vx: dxs / dls * gn.spd, vy: dys / dls * gn.spd,
+              kind: "shot", dmg: gn.dmg, color: gn.color });
+          }
+          burst(en.x, en.y + er * 0.3, gn.color, 3);
+        }
       }
     }
     // 弾との当たり(敵が完全に画面に入ってから当たる)
@@ -685,25 +702,15 @@ function updateFx(dt){
 function enemyRadius(en){ return 30 + Math.min(en.count, 40) * 1.5; }
 
 // ================= ボス =================
-// ダメージはまずシールド(車・戦車)が受け止める
+// プレイヤーはHP3(3回攻撃を受けたら死ぬ)。被弾直後は1秒の無敵時間
 function damagePlayer(rawDmg, color){
-  let d = rawDmg;
-  if (player.shield > 0){
-    const ab = Math.min(player.shield, d);
-    player.shield -= ab; d -= ab;
-    burst(player.x, player.y - 12, "#7de8ff", 6);
-    if (player.shield <= 0 && player.vehicle){
-      floats.push({ x: player.x, y: player.y - 65, text: "戦車が大破!", color: "#ffb0b0", t: 1.2 });
-      burst(player.x, player.y - 20, "#9aa4b2", 14);
-      player.vehicle = null;                 // 効果が切れたら消える
-    }
-  }
-  if (d > 0){
-    d = Math.min(d, player.count);
-    player.count -= d;
-    floats.push({ x: player.x, y: player.y - 50, text: "-" + d, color: color || "#ff9c9c", t: 0.9 });
-    if (player.count <= 0){ player.count = 0; gameOver(); }
-  }
+  if (state !== "play") return;
+  if (player.inv > 0) return;                // 無敵時間中はノーダメージ
+  player.inv = 1.0;
+  player.hp--;
+  floats.push({ x: player.x, y: player.y - 50, text: "HP -1", color: color || "#ff9c9c", t: 1.0 });
+  shake = Math.max(shake, 0.3); flash = Math.max(flash, 0.2);
+  if (player.hp <= 0) gameOver();
 }
 
 const BOSS_WEAPONS = ["sword", "axe", "spear", "bow", "whip", "bomb"];
@@ -849,6 +856,7 @@ function updateBoss(dt){
     stageStartM = meters;
     stageBannerT = 2.2;
     player.count = 1;                        // 次のステージも1人から
+    player.hp = 3; player.inv = 0;           // HPは全回復
     gates = []; enemies = []; bullets = []; bossShots = []; waves = [];
     spawnDist = 30;                          // 新ステージ開始3秒以内にレーンが出る
     gateRowsThisStage = 0;                   // 新ステージ最初の行はプラスから
@@ -1069,9 +1077,15 @@ function draw(dt){
     ctx.font = "12px -apple-system, sans-serif";
     ctx.fillStyle = "rgba(255,215,107,0.85)";
     const list = player.weapons.map((hw, i) =>
-      (i === 0 ? "隊長:" : "兵:") + (WEAPONS[hw.wid].short || WEAPONS[hw.wid].name) + "(" + hw.ammo + ")");
-    ctx.fillText(list.slice(0, 3).join(" "), 14, 52);
-    if (list.length > 3) ctx.fillText(list.slice(3).join(" "), 14, 68);
+      (i === 0 ? "隊長:" : "兵:") + (WEAPONS[hw.wid].short || WEAPONS[hw.wid].name));
+    ctx.fillText(list.slice(0, 4).join(" "), 14, 52);
+    if (list.length > 4) ctx.fillText(list.slice(4).join(" "), 14, 68);
+  }
+  // HP(ハート): 3回攻撃を受けたら死ぬ
+  ctx.font = "bold 19px -apple-system, sans-serif";
+  for (let i = 0; i < 3; i++){
+    ctx.fillStyle = i < player.hp ? "#ff5a6e" : "rgba(255,255,255,0.18)";
+    ctx.fillText("♥", 14 + i * 22, 90);
   }
   ctx.textAlign = "right";
   ctx.fillStyle = "#ffd76b";
@@ -1123,8 +1137,34 @@ function gateColors(g){
 }
 function gateLabel(g){
   if (g.op === "wpn") return WEAPONS[g.wid].name;
-  if (g.op === "add") return "+" + g.val.toFixed(1);
-  return "−" + g.val.toFixed(1);
+  if (g.op === "add") return "+" + Math.round(g.val);
+  return "−" + Math.round(g.val);
+}
+// 宝箱(色違い: 武器=金/木、プラス=青、マイナス=赤、連続=緑)
+function drawChest(cx, y, lidC, bodyC, trimC, glowC){
+  ctx.fillStyle = glowC;                                       // 光る輪
+  ctx.beginPath(); ctx.arc(cx, y - 30, 30, 0, 6.283); ctx.fill();
+  ctx.fillStyle = lidC;                                        // アーチ形のフタ
+  ctx.beginPath();
+  ctx.moveTo(cx - 22, y - 26);
+  ctx.quadraticCurveTo(cx, y - 42, cx + 22, y - 26);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = trimC; ctx.lineWidth = 2;                  // フタの縁
+  ctx.beginPath();
+  ctx.moveTo(cx - 22, y - 26);
+  ctx.quadraticCurveTo(cx, y - 42, cx + 22, y - 26);
+  ctx.stroke();
+  ctx.fillStyle = bodyC;                                       // 本体
+  roundRect(cx - 22, y - 26, 44, 15, 3);
+  ctx.fillStyle = "rgba(0,0,0,0.35)";                          // フタとの境目
+  ctx.fillRect(cx - 22, y - 27, 44, 2);
+  ctx.fillStyle = trimC;                                       // 縁と錠前
+  ctx.fillRect(cx - 22, y - 26, 3, 15);
+  ctx.fillRect(cx + 19, y - 26, 3, 15);
+  ctx.fillRect(cx - 22, y - 13, 44, 2.5);
+  roundRect(cx - 4.5, y - 25, 9, 10, 2);
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(cx - 1.5, y - 22, 3, 4.5);                      // 鍵穴
 }
 function drawGate(g){
   const w = laneW();
@@ -1144,60 +1184,33 @@ function drawGate(g){
     if (fl > 0) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 2);  // 被弾中は震える
     ctx.globalAlpha = s.used ? 0.25 : 1;
     if (s.op === "wpn"){
-      // 武器は宝箱の上に載せて表示
-      const total = WEAPONS[s.wid].ammo + (s.bonus || 0);
-      // 光る輪
-      ctx.fillStyle = "rgba(255,200,60,0.14)";
-      ctx.beginPath(); ctx.arc(cx, g.y - 30, 30, 0, 6.283); ctx.fill();
-      // 宝箱: アーチ形のフタ
-      ctx.fillStyle = "#7a4e22";
-      ctx.beginPath();
-      ctx.moveTo(cx - 22, g.y - 26);
-      ctx.quadraticCurveTo(cx, g.y - 42, cx + 22, g.y - 26);
-      ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = "#e8c840"; ctx.lineWidth = 2;            // フタの金縁
-      ctx.beginPath();
-      ctx.moveTo(cx - 22, g.y - 26);
-      ctx.quadraticCurveTo(cx, g.y - 42, cx + 22, g.y - 26);
-      ctx.stroke();
-      // 本体
-      ctx.fillStyle = "#8f5c2a";
-      roundRect(cx - 22, g.y - 26, 44, 15, 3);
-      ctx.fillStyle = "#5e3c1a";                                 // フタとの境目
-      ctx.fillRect(cx - 22, g.y - 27, 44, 2);
-      ctx.fillStyle = "#e8c840";                                 // 金の縁と錠前
-      ctx.fillRect(cx - 22, g.y - 26, 3, 15);
-      ctx.fillRect(cx + 19, g.y - 26, 3, 15);
-      ctx.fillRect(cx - 22, g.y - 13, 44, 2.5);
-      roundRect(cx - 4.5, g.y - 25, 9, 10, 2);
-      ctx.fillStyle = "#8a6a1a";
-      ctx.fillRect(cx - 1.5, g.y - 22, 3, 4.5);                  // 鍵穴
+      // 武器の宝箱(金の縁の木箱)。上に武器アイコン、下に武器名
+      drawChest(cx, g.y, "#7a4e22", "#8f5c2a", "#e8c840", "rgba(255,200,60,0.14)");
       drawWeaponIcon(s.wid, cx, g.y - 48);                       // 宝箱の上に武器
       ctx.fillStyle = "#ffdf9c";
       ctx.font = "bold 11px -apple-system, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText((WEAPONS[s.wid].short || WEAPONS[s.wid].name) + " ×" + total, cx, g.y - 2);
-      if (fl > 0){                             // 被弾リング
-        ctx.strokeStyle = "rgba(255,255,255," + Math.min(1, fl * 3).toFixed(2) + ")";
-        ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.arc(cx, g.y - 22, 27 + fl * 20, 0, 6.283); ctx.stroke();
-      }
+      ctx.fillText(WEAPONS[s.wid].short || WEAPONS[s.wid].name, cx, g.y - 2);
     } else {
+      // 人の増減も宝箱で表示(プラス=青 / マイナス=赤 / 連続=緑)。数字は宝箱の上
       const c = gateColors(s);
-      ctx.fillStyle = c.fill;
-      ctx.fillRect(x0, g.y - 26, x1 - x0, 26);
-      ctx.fillStyle = c.edge;
-      ctx.fillRect(x0, g.y - 3, x1 - x0, 3);
-      if (fl > 0){                             // 被弾中は白く光る
-        ctx.fillStyle = "rgba(255,255,255," + Math.min(0.5, fl * 1.6).toFixed(2) + ")";
-        ctx.fillRect(x0, g.y - 26, x1 - x0, 26);
-      }
-      // 増減の対象が「人」だと分かるように人のアイコンを表示
-      drawPersonIcon(cx - 32, g.y - 12, s.op === "add" ? "#a9e0ff" : "#ffb0b0");
+      if (s.chain)               drawChest(cx, g.y, "#1f6b42", "#2a8252", "#7ff0b2", "rgba(60,220,140,0.16)");
+      else if (s.op === "add")   drawChest(cx, g.y, "#2c4f8a", "#376099", "#8fc1ff", "rgba(80,150,255,0.15)");
+      else                       drawChest(cx, g.y, "#7a2626", "#8f3030", "#ff9c9c", "rgba(255,80,80,0.15)");
+      const label = gateLabel(s);
       ctx.fillStyle = c.text;
-      ctx.font = "bold " + Math.round(20 + fl * 24) + "px -apple-system, sans-serif";  // 数字がポンと跳ねる
+      const fs = label.length >= 6 ? 15 : label.length >= 5 ? 17 : 20;
+      ctx.font = "bold " + Math.round(fs + fl * 10) + "px -apple-system, sans-serif";  // 数字がポンと跳ねる
       ctx.textAlign = "center";
-      ctx.fillText(gateLabel(s), cx + 8, g.y - 7);
+      ctx.fillText(label, cx + 7, g.y - 48);
+      // 増減の対象が「人」だと分かるように人のアイコンを数字の横に表示
+      drawPersonIcon(cx - 7 - ctx.measureText(label).width / 2 - 8, g.y - 54,
+        s.op === "add" ? "#a9e0ff" : "#ffb0b0");
+    }
+    if (fl > 0){                               // 被弾リング
+      ctx.strokeStyle = "rgba(255,255,255," + Math.min(1, fl * 3).toFixed(2) + ")";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cx, g.y - 22, 27 + fl * 20, 0, 6.283); ctx.stroke();
     }
     ctx.globalAlpha = 1;
     ctx.restore();
@@ -1570,6 +1583,8 @@ function drawLeader(sx, sy){
 }
 function drawSquad(){
   beginPersp(player.x, player.y);
+  // 被弾後の無敵時間中は点滅する
+  if (player.inv > 0 && Math.floor(player.inv * 12) % 2 === 0) ctx.globalAlpha = 0.45;
   const holdersN = Math.min(player.weapons.length, player.count);
   const soldierHolders = Math.max(0, holdersN - 1);   // 隊長以外の武器持ち
   const others = Math.max(0, player.count - 1 - soldierHolders);  // 拳銃の一般兵
