@@ -97,13 +97,20 @@ let best = 0;
 let player, bullets, gates, enemies, parts, meters, speed, spawnDist, shootT, shake, flash, killCount;
 let bosses, bossFight, bossWarnT, nextBossAt, floats, bossShots, slashes, waves;
 let stage, stageStartM, stageBannerT;
-let chainN, chainLane, gateRowsThisStage, captives, blasts;
+let chainN, chainLane, gateRowsThisStage, captives, blasts, corpses;
+// 武器を持っている(射撃できる)兵士の数。残りは素手でパンチ
+function armedCount(){
+  let t = 0;
+  for (const st of player.weapons) t += st.n;
+  return Math.min(t, player.count);
+}
 let resumeStage = 1;                         // ゲームオーバーになったステージから再開する
 
 function reset(){
-  player  = { x: W/2, y: 570, count: 1, weapons: [], peak: 1, inv: 0 };
+  player  = { x: W/2, y: 570, count: 1, weapons: [{ wid: 0, n: 1, t: 0 }], peak: 1, inv: 0 };
   captives = [];                             // 捕虜として連れ去られる兵士の演出
   blasts = [];                               // 手榴弾の爆発範囲エフェクト
+  corpses = [];                              // 倒れた敵と血だまり
   chainN = 0; chainLane = 0; gateRowsThisStage = 0;
   bullets = [];
   gates   = [];
@@ -238,7 +245,7 @@ function squadHalfWidth(){
 }
 // 隊列の最後尾の位置(武器持ちはここに並ぶ)
 function squadRearY(){
-  const walkers = Math.max(0, player.count - Math.min(player.weapons.length, player.count));
+  const walkers = Math.max(0, player.count - armedCount());
   return walkers > 0 ? player.y + formationData(walkers).maxY * 0.8 + 24 : player.y + 24;
 }
 // i番目の武器の持ち手の位置(最後尾に3列で並ぶ)
@@ -278,7 +285,7 @@ function makeGatePair(){
   // マイナスの宝箱は無し。人(プラス)と武器の2種類だけ
   function one(){
     if (Math.random() < 0.5) return { op:"add", val: gateVal(), gain: gateGain(), used:false, hits:0 };
-    return { op:"wpn", wid: randWpn(), val: gateVal(), used:false, hits:0 };
+    return { op:"wpn", wid: randWpn(), val: gateVal(), wn: 1, used:false, hits:0 };
   }
   // 3枠それぞれに「ある/ない」のランダム性を持たせる
   const slots = [];
@@ -296,9 +303,9 @@ function makeGatePair(){
   gates.push({ y: -60, slots });
 }
 function makeEnemy(forceMid){
-  // 装甲兵(強い敵)はステージが進むほど徐々に増える
+  // 装甲兵(強い敵)はステージ1から多め、ステージが進むほどさらに増える
   const mid = forceMid === true ? true
-    : Math.random() < Math.min(0.05 + (stage - 1) * 0.06, 0.55);
+    : Math.random() < Math.min(0.30 + (stage - 1) * 0.04, 0.65);
   let n = 3 + Math.floor(effDiff() / 22) + Math.floor(Math.random()*4);
   if (mid) n = Math.max(2, Math.round(n * 0.6));
   const x = ROAD_L + 50 + Math.random() * (ROAD_R - ROAD_L - 100);
@@ -324,6 +331,16 @@ function breathAttack(x, y, dmg){
 function addSlash(x, y){
   slashes.push({ x, y, t: 0.22, ang: Math.random() * 0.8 - 0.4 });
 }
+// 敵がやられたら、その場で倒れ込む(血が地面に広がる)
+function dropCorpses(en, k){
+  const r = enemyRadius(en);
+  for (let i = 0; i < Math.min(k, 3); i++){
+    if (corpses.length > 45) corpses.shift();
+    corpses.push({ x: en.x + (Math.random() - 0.5) * r * 1.4,
+      y: en.y + (Math.random() - 0.5) * r * 0.8,
+      rot: (Math.random() - 0.5) * 0.7, t: 2.6, mid: (en.hpPer || 1) > 1 });
+  }
+}
 // 手榴弾の爆発: 半径内の敵・ボス全員にダメージ
 function explodeGrenade(x, y){
   burst(x, y, "#a8d86b", 22);
@@ -336,6 +353,7 @@ function explodeGrenade(x, y){
     if (Math.hypot(en.x - x, en.y - y) < 95){
       const d = Math.min(5, en.count);
       en.count -= d; killCount += d;
+      if (d > 0) dropCorpses(en, d);
       burst(en.x, en.y, "#ffb3b3", 5);
     }
   }
@@ -434,15 +452,6 @@ let overT = 0;
 function applyGate(g){
   if (g.op === "add") player.count += Math.floor(g.val);   // 実際の増減は整数部分
   if (g.op === "sub") player.count -= Math.floor(g.val);
-  if (g.op === "wpn"){
-    // 1人1丁で兵士が装備。弾数は無限(持ち手が倒れるまで)
-    const cap = Math.min(player.count, 8);
-    while (player.weapons.length >= cap && player.weapons.length > 0)
-      player.weapons.shift();                // 持ち手が足りなければ一番古い武器と交換
-    player.weapons.push({ wid: g.wid, t: 0 });
-    floats.push({ x: player.x, y: player.y - 70,
-      text: WEAPONS[g.wid].name + "をゲット!", color: "#ffd76b", t: 1.4 });
-  }
   player.count = Math.min(player.count, 999);
   if (player.count <= 0){
     // マイナス系バーでは全滅させない: 1人残してゲーム続行
@@ -469,62 +478,54 @@ function update(dt){
 
   player.inv = Math.max(0, player.inv - dt);     // 被弾後の無敵時間を減らす
   player.peak = Math.max(player.peak || 1, player.count);   // 体力ゲージ用の最大人数
-  // 持ち手が倒れた武器は失われる(武器の数 ≦ 人数、最大8)
-  const wcap = Math.min(Math.max(player.count, 0), 8);
-  if (player.weapons.length > wcap){
-    const lost = player.weapons.length - wcap;
-    player.weapons.length = wcap;
-    floats.push({ x: player.x, y: player.y - 70,
-      text: "武器を" + lost + "つ失った…", color: "#ffb0b0", t: 1.1 });
+  // 兵士が捕虜になると武器も失われる(武器の総数 ≦ 人数)。古い武器から失う
+  let totW = 0;
+  for (const st of player.weapons) totW += st.n;
+  let excessW = totW - Math.max(player.count, 0);
+  while (excessW > 0 && player.weapons.length){
+    const st0 = player.weapons[0];
+    const d0 = Math.min(st0.n, excessW);
+    st0.n -= d0; excessW -= d0;
+    if (st0.n <= 0) player.weapons.shift();
   }
+  // 倒れた敵は道と一緒に流れて消える
+  for (const c of corpses){ c.y += dy; c.t -= dt; }
+  corpses = corpses.filter(c => c.t > 0 && c.y < H + 40);
 
   spawnStep(dy);
   updateBoss(dt);
   updateWaves(dt);
 
-  // 射撃: 一般兵は全員デフォルトの拳銃。取得武器は後方の兵士が1人1丁で撃つ
-  shootT -= dt;
-  if (shootT <= 0){
-    const pw = WEAPONS[0];
-    shootT = pw.rate;
-    const holdersN = Math.min(player.weapons.length, player.count);
-    const pistolSoldiers = Math.max(0, player.count - holdersN);
-    if (pistolSoldiers > 0){
-      const f = formationData(pistolSoldiers);
-      const capN = Math.min(f.pts.length, 36, Math.max(1, Math.floor(240 * pw.rate)));
-      for (let c = 0; c < capN; c++){
-        const p = f.pts[c];
-        bullets.push({ x: player.x + p.x, y: player.y + p.y * 0.8 - 10,
-          vx: 0, vy: -pw.bspd, dmg: pw.dmg, wi: 0, pierce: 0 });
+  // 射撃: 武器を持つ兵士だけが撃てる(武器の種類ごとの連射速度)。素手の兵士は接近戦でパンチ
+  let slotsLeft = player.count;
+  for (const st of player.weapons){
+    const shooters = Math.min(st.n, slotsLeft);
+    slotsLeft -= shooters;
+    if (shooters <= 0) continue;
+    const w = WEAPONS[st.wid];
+    st.t = (st.t || 0) - dt;
+    if (st.t > 0) continue;
+    st.t = w.rate;
+    const ry = squadRearY();
+    const emit = Math.min(shooters, w.spread ? 8 : 24);   // 同時発射数の上限
+    for (let k = 0; k < emit; k++){
+      const fx0 = player.x + ((k % 5) - 2) * 13 + (w.jitter ? (Math.random() - 0.5) * 6 : 0);
+      const fy0 = ry + Math.floor(k / 5) * 8 - 14;
+      if (w.pierce){                               // レーザーは斜めに発射(壁で反射する)
+        st.dir = -(st.dir || 1);
+        bullets.push({ x: fx0, y: fy0, vx: st.dir * 260, vy: -w.bspd * 0.75,
+          dmg: w.dmg, wi: st.wid, pierce: w.pierce });
+      } else if (w.spread){
+        for (const vx of [-90, 0, 90])
+          bullets.push({ x: fx0, y: fy0, vx, vy: -w.bspd, dmg: w.dmg, wi: st.wid, pierce: 0 });
+      } else {
+        bullets.push({ x: fx0, y: fy0, vx: 0, vy: -w.bspd, dmg: w.dmg, wi: st.wid, pierce: w.pierce || 0 });
       }
-    }
-  }
-  // 取得武器(最後尾の兵士が、それぞれの連射速度で発射)
-  for (let i = player.weapons.length - 1; i >= 0; i--){
-    if (i >= player.count) continue;               // 持ち手がいない
-    const hw = player.weapons[i];
-    hw.t = (hw.t || 0) - dt;
-    if (hw.t > 0) continue;
-    const w = WEAPONS[hw.wid];
-    hw.t = w.rate;
-    const pos = holderPos(i);
-    let fx = pos.x;
-    if (w.jitter) fx += (Math.random() - 0.5) * 6;
-    if (w.pierce){                                 // レーザーは斜めに発射(壁で反射する)
-      hw.dir = -(hw.dir || 1);
-      bullets.push({ x: fx, y: pos.y - 16, vx: hw.dir * 260, vy: -w.bspd * 0.75,
-        dmg: w.dmg, wi: hw.wid, pierce: w.pierce });
-    } else if (w.spread){
-      for (const vx of [-90, 0, 90])
-        bullets.push({ x: fx, y: pos.y - 16, vx, vy: -w.bspd, dmg: w.dmg, wi: hw.wid, pierce: 0 });
-    } else {
-      bullets.push({ x: fx, y: pos.y - 16, vx: 0, vy: -w.bspd, dmg: w.dmg, wi: hw.wid, pierce: w.pierce || 0 });
     }
     // マズルフラッシュ(武器ごとに派手さが変わる)
     const heavy = w.cannon || w.missile;
-    burst(fx, pos.y - 22, w.color, heavy ? 10 : (w.spread ? 6 : 3));
+    burst(player.x, ry - 20, w.color, heavy ? 10 : (w.spread ? 6 : 3));
     if (heavy) shake = Math.max(shake, 0.07);
-    // 弾数は無限: 持ち手が倒れるまで撃ち続けられる
   }
 
   // 弾
@@ -568,11 +569,16 @@ function update(dt){
       b.dead = true;
       side.flash = 0.22;                           // 被弾中の宝箱は光って震える
       side.val -= 1;
+      if (side.op === "wpn") side.wn = (side.wn || 1) + 1;   // 撃つほどもらえる武器が増える
       if (side.val <= 0){                          // 撃ち切った! 宝箱が開く
         side.used = true;
         const ccx = ROAD_L + (lane + 0.5) * laneW();
         if (side.op === "wpn"){
-          applyGate({ op: "wpn", wid: side.wid });
+          // たまった本数分の武器を回収して、素手の兵士から順に装備
+          player.weapons.push({ wid: side.wid, n: Math.max(1, side.wn || 1), t: 0 });
+          if (player.weapons.length > 6) player.weapons.shift();
+          floats.push({ x: player.x, y: player.y - 70,
+            text: WEAPONS[side.wid].name + "×" + side.wn + " 回収!", color: "#ffd76b", t: 1.4 });
           burst(ccx, g.y - 20, "#ffd76b", 18);
         } else {
           player.count = Math.min(player.count + side.gain, 999);
@@ -628,6 +634,23 @@ function update(dt){
             shake = Math.max(shake, 0.2);
           }
         }
+        // 素手の兵士は接近してきた敵をパンチで反撃
+        const unarmed = player.count - armedCount();
+        if (unarmed > 0 && en.atype !== "poison"){
+          en.punchT = (en.punchT === undefined ? 0.5 : en.punchT) - dt;
+          if (en.punchT <= 0){
+            en.punchT = 0.7;
+            en.hpBuf = (en.hpBuf || 0) + Math.min(unarmed, 25);
+            let pk = 0;
+            while (en.hpBuf >= (en.hpPer || 1) && en.count > 0){
+              en.hpBuf -= (en.hpPer || 1);
+              en.count--; killCount++; pk++;
+            }
+            if (pk > 0) dropCorpses(en, pk);
+            burst(en.x, en.y + er * 0.5, "#ffd9a8", 6);
+            addSlash(en.x, en.y + er * 0.4);
+          }
+        }
       }
     }
     // 弾との当たり(敵が完全に画面に入ってから当たる)
@@ -646,11 +669,13 @@ function update(dt){
         }
         // 中堅兵は1人あたりHP3(蓄積ダメージで倒す)
         en.hpBuf = (en.hpBuf || 0) + (b.dmg || 1);
+        let bk = 0;
         while (en.hpBuf >= (en.hpPer || 1) && en.count > 0){
           en.hpBuf -= (en.hpPer || 1);
           en.count--;
-          killCount++;
+          killCount++; bk++;
         }
+        if (bk > 0) dropCorpses(en, bk);            // やられた敵はその場に倒れ込む
         burst(b.x, en.y + r*0.4, "#ffb3b3", (bw.cannon || bw.missile) ? 12 : 3);
         if (bw.missile){                                      // ロケランは周囲の群れにも爆風
           burst(b.x, b.y, "#ff9c5c", 16);
@@ -660,6 +685,7 @@ function update(dt){
             if (Math.hypot(other.x - en.x, other.y - en.y) < 90){
               const d2 = Math.min(4, other.count);
               other.count -= d2; killCount += d2;
+              if (d2 > 0) dropCorpses(other, d2);
             }
           }
           shake = Math.max(shake, 0.12);
@@ -825,9 +851,10 @@ function updateBoss(dt){
     stage++;
     stageStartM = meters;
     stageBannerT = 2.2;
-    player.count = 1;                        // 次のステージも1人から
+    player.count = 1;                        // 次のステージも1人から(拳銃1丁持ち)
     player.peak = 1; player.inv = 0;
-    gates = []; enemies = []; bullets = []; bossShots = []; waves = [];
+    player.weapons = [{ wid: 0, n: 1, t: 0 }];
+    gates = []; enemies = []; bullets = []; bossShots = []; waves = []; corpses = [];
     spawnDist = 30;                          // 新ステージ開始3秒以内にレーンが出る
     gateRowsThisStage = 0;                   // 新ステージ最初の行はプラスから
     nextBossAt = stageStartM + 440;
@@ -869,6 +896,35 @@ function draw(dt){
     ctx.beginPath(); ctx.moveTo(px(lx, 0), 0); ctx.lineTo(lx, H); ctx.stroke();
   }
   ctx.setLineDash([]);
+
+  // 倒れ込んだ敵と血だまり(地面の演出なのでゲートより先に描く)
+  for (const c of corpses){
+    beginPersp(c.x, c.y);
+    const age = 2.6 - c.t;
+    ctx.globalAlpha = Math.min(0.6, Math.max(0, c.t * 0.45));    // 血だまり(徐々に広がる)
+    ctx.fillStyle = "#6e1414";
+    const br2 = 5 + Math.min(1, age * 2.0) * 9;
+    ctx.beginPath(); ctx.ellipse(c.x, c.y + 3, br2, br2 * 0.42, 0, 0, 6.283); ctx.fill();
+    ctx.fillStyle = "#8e1c1c";
+    ctx.beginPath(); ctx.ellipse(c.x + 3, c.y + 4, br2 * 0.45, br2 * 0.2, 0, 0, 6.283); ctx.fill();
+    ctx.globalAlpha = Math.max(0, Math.min(1, c.t * 1.3));       // 倒れ込んだ兵士
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(1.5 + c.rot);                                     // 横倒し
+    ctx.scale(2.1, 2.1);
+    ctx.fillStyle = c.mid ? "#3c4152" : "#6a3a30";               // 胴体
+    roundRect(-3.5, -3, 7, 6, 2);
+    ctx.fillStyle = c.mid ? "#20222e" : "#33201a";               // 脚
+    ctx.fillRect(-2.6, 3, 2.2, 4.5);
+    ctx.fillRect(0.6, 3, 2.2, 4.5);
+    ctx.fillStyle = "#c9a884";                                   // 頭
+    ctx.beginPath(); ctx.arc(0, -6.3, 2.9, 0, 6.283); ctx.fill();
+    ctx.fillStyle = c.mid ? "#1c1e28" : "#3a231e";               // ずれたヘルメット
+    ctx.beginPath(); ctx.arc(1.2, -7.4, 3.1, Math.PI * 0.9, Math.PI * 1.9); ctx.fill();
+    ctx.restore();
+    ctx.restore();                                               // 遠近変換おわり
+  }
+  ctx.globalAlpha = 1;
 
   // ゲート
   for (const g of gates) drawGate(g);
@@ -1072,13 +1128,12 @@ function draw(dt){
   ctx.textAlign = "left";
   ctx.fillStyle = "#9cc4ff";
   ctx.font = "bold 13px -apple-system, sans-serif";
-  if (player.weapons.length === 0){
-    ctx.fillText("🔫 拳銃", 14, 34);
-  } else {
-    ctx.fillText("🔫 拳銃 +", 14, 34);
+  {
+    const ac = armedCount(), ua = Math.max(0, player.count - ac);
+    ctx.fillText("🔫 武装 " + ac + "人 / 👊 素手 " + ua + "人", 14, 34);
     ctx.font = "12px -apple-system, sans-serif";
     ctx.fillStyle = "rgba(255,215,107,0.85)";
-    const list = player.weapons.map(hw => WEAPONS[hw.wid].short || WEAPONS[hw.wid].name);
+    const list = player.weapons.map(st => (WEAPONS[st.wid].short || WEAPONS[st.wid].name) + "×" + st.n);
     ctx.fillText(list.slice(0, 4).join(" "), 14, 52);
     if (list.length > 4) ctx.fillText(list.slice(4).join(" "), 14, 68);
   }
@@ -1179,9 +1234,12 @@ function drawGate(g){
     ctx.globalAlpha = s.used ? 0.25 : 1;
     ctx.textAlign = "center";
     if (s.op === "wpn"){
-      // 武器の宝箱: 数字(必要射撃回数)を撃ち切ると武器ゲット
+      // 武器の宝箱: 撃つほどもらえる本数(×N)が増え、数字を0まで撃ち切ると回収
       drawChest(cx, g.y, "#7a4e22", "#8f5c2a", "#e8c840", "rgba(255,200,60,0.14)");
-      drawWeaponIcon(s.wid, cx, g.y - 46);                       // 宝箱の上に武器
+      drawWeaponIcon(s.wid, cx - 8, g.y - 46);                   // 宝箱の上に武器
+      ctx.fillStyle = "#ffe98a";
+      ctx.font = "bold 13px -apple-system, sans-serif";
+      ctx.fillText("×" + (s.wn || 1), cx + 15, g.y - 42);        // もらえる武器の本数
       ctx.fillStyle = "#ffdf9c";
       ctx.font = "bold 11px -apple-system, sans-serif";
       ctx.fillText(WEAPONS[s.wid].short || WEAPONS[s.wid].name, cx, g.y - 2);
@@ -1189,7 +1247,7 @@ function drawGate(g){
       ctx.fillStyle = "#fff1c4";
       const fs = label.length >= 4 ? 15 : 18;
       ctx.font = "bold " + Math.round(fs + fl * 8) + "px -apple-system, sans-serif";
-      ctx.fillText(label, cx, g.y - 66);                         // 必要射撃回数
+      ctx.fillText(label, cx, g.y - 66);                         // 残り射撃回数
     } else if (s.chain){
       // 緑の連続パネル: 通過で+1
       drawChest(cx, g.y, "#1f6b42", "#2a8252", "#7ff0b2", "rgba(60,220,140,0.16)");
@@ -1561,8 +1619,12 @@ function drawSoldier(sx, sy, wid){
   ctx.fillStyle = "#38452c";                               // ミリタリーヘルメット
   ctx.beginPath(); ctx.arc(0, -9, 3.9, Math.PI, 0); ctx.fill();
   ctx.fillRect(-4, -9.6, 8, 1.7);                          // つば
-  // 構えている武器
-  if (wid === undefined || wid === 0){
+  // 構えている武器(未指定なら素手=拳を構える)
+  if (wid === undefined){
+    ctx.fillStyle = "#d8b48c";
+    ctx.beginPath(); ctx.arc(4.4, -4.4, 1.9, 0, 6.283); ctx.fill();   // 構えた拳
+    ctx.beginPath(); ctx.arc(-4.4, -3.0, 1.9, 0, 6.283); ctx.fill();
+  } else if (wid === 0){
     // 拳銃(小さなハンドガン)
     ctx.save();
     ctx.translate(4.6, -3.5);
@@ -1604,17 +1666,20 @@ function drawSquad(){
   beginPersp(player.x, player.y);
   // 被弾後の無敵時間中は点滅する
   if (player.inv > 0 && Math.floor(player.inv * 12) % 2 === 0) ctx.globalAlpha = 0.45;
-  const holdersN = Math.min(player.weapons.length, player.count);
-  const walkers = Math.max(0, player.count - holdersN);    // 拳銃の一般兵
+  const walkers = Math.max(0, player.count - armedCount());  // 素手の一般兵
   if (walkers > 0){
     const f = formationData(walkers);
     for (const p of f.pts) drawSoldier(player.x + p.x, player.y + p.y * 0.8);
   }
-  // 武器持ちの兵士は最後尾に並ぶ。戦車は大きく描いて兵士が乗る
-  for (let i = 0; i < holdersN; i++){
-    const pos = holderPos(i);
-    if (player.weapons[i].wid === 7) drawTankRide(pos.x, pos.y);
-    else drawSoldier(pos.x, pos.y, player.weapons[i].wid);
+  // 武器持ちの兵士は最後尾に並ぶ(種類ごとに代表を表示)。戦車は大きく描いて兵士が乗る
+  let di = 0;
+  for (const st of player.weapons){
+    const show = Math.min(st.n, 3);
+    for (let k = 0; k < show && di < 9; k++){
+      const pos = holderPos(di); di++;
+      if (st.wid === 7 && k === 0) drawTankRide(pos.x, pos.y);
+      else drawSoldier(pos.x, pos.y, st.wid);
+    }
   }
   // 数ラベル+体力ゲージ(現在の人数 / これまでの最大人数)
   const peak = Math.max(player.peak || 1, player.count, 1);
