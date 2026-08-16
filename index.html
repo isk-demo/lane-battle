@@ -229,8 +229,11 @@ function formationData(n){
   let i = 0, row = 0;
   while (i < n){
     const inRow = Math.min(n - i, 6);
+    let mean = 0;                              // 各行を中央揃えにする
+    for (let k = 0; k < inRow; k++) mean += colX[k];
+    mean /= inRow;
     for (let k = 0; k < inRow; k++){
-      pts.push({ x: colX[k], y: row * 20 });
+      pts.push({ x: colX[k] - mean, y: row * 20 });
       i++;
     }
     row++;
@@ -248,11 +251,16 @@ function squadRearY(){
   const walkers = Math.max(0, player.count - armedCount());
   return walkers > 0 ? player.y + formationData(walkers).maxY * 0.8 + 24 : player.y + 24;
 }
-// i番目の武器の持ち手の位置(最後尾に3列で並ぶ)
+// i番目の武器の持ち手の位置(最後尾に3列で並ぶ。中央から埋まる)
+const HOLDER_COLS = [0, -1, 1];
 function holderPos(i){
   const ry = squadRearY();
-  const col = i % 3, row = Math.floor(i / 3);
-  return { x: player.x + (col - 1) * 32, y: ry + row * 20 };
+  const col = HOLDER_COLS[i % 3], row = Math.floor(i / 3);
+  return { x: player.x + col * 32, y: ry + row * 20 };
+}
+// 手前(下)に来るほど大きく見える遠近スケール
+function depthK(y){
+  return 0.72 + 0.55 * Math.max(0, Math.min(1, y / H));
 }
 
 // ================= スポーン =================
@@ -496,21 +504,26 @@ function update(dt){
   updateBoss(dt);
   updateWaves(dt);
 
-  // 射撃: 武器を持つ兵士だけが撃てる(武器の種類ごとの連射速度)。素手の兵士は接近戦でパンチ
+  // 射撃: 武器を持つ兵士だけが撃てる(武器の種類ごとの連射速度)。
+  // 弾はその武器を構えている兵士の位置から出る(拳銃の人は拳銃、レーザーの人はレーザー)
   let slotsLeft = player.count;
+  let visBase = 0;                                        // 描画中の持ち手の並び位置
   for (const st of player.weapons){
     const shooters = Math.min(st.n, slotsLeft);
     slotsLeft -= shooters;
     if (shooters <= 0) continue;
+    const show = Math.min(shooters, 3);                   // 画面に見えている代表の人数
+    const myBase = visBase;
+    visBase += show;
     const w = WEAPONS[st.wid];
     st.t = (st.t || 0) - dt;
     if (st.t > 0) continue;
     st.t = w.rate;
-    const ry = squadRearY();
     const emit = Math.min(shooters, w.spread ? 8 : 24);   // 同時発射数の上限
     for (let k = 0; k < emit; k++){
-      const fx0 = player.x + ((k % 5) - 2) * 13 + (w.jitter ? (Math.random() - 0.5) * 6 : 0);
-      const fy0 = ry + Math.floor(k / 5) * 8 - 14;
+      const pos = holderPos(myBase + (k % show));         // その武器の持ち手の位置から発射
+      const fx0 = pos.x + (w.jitter ? (Math.random() - 0.5) * 6 : (k >= show ? (Math.random() - 0.5) * 12 : 0));
+      const fy0 = pos.y - 16;
       if (w.pierce){                               // レーザーは斜めに発射(壁で反射する)
         st.dir = -(st.dir || 1);
         bullets.push({ x: fx0, y: fy0, vx: st.dir * 260, vy: -w.bspd * 0.75,
@@ -522,9 +535,10 @@ function update(dt){
         bullets.push({ x: fx0, y: fy0, vx: 0, vy: -w.bspd, dmg: w.dmg, wi: st.wid, pierce: w.pierce || 0 });
       }
     }
-    // マズルフラッシュ(武器ごとに派手さが変わる)
+    // マズルフラッシュ(その武器の持ち手の位置で光る)
+    const mp = holderPos(myBase);
     const heavy = w.cannon || w.missile;
-    burst(player.x, ry - 20, w.color, heavy ? 10 : (w.spread ? 6 : 3));
+    burst(mp.x, mp.y - 20, w.color, heavy ? 10 : (w.spread ? 6 : 3));
     if (heavy) shake = Math.max(shake, 0.07);
   }
 
@@ -716,15 +730,16 @@ function updateFx(dt){
 function enemyRadius(en){ return 30 + Math.min(en.count, 40) * 1.5; }
 
 // ================= ボス =================
-// 敵の攻撃を受けると兵士が1人「捕虜」として連れ去られる。全員捕まったらゲームオーバー
+// 敵の攻撃を受けると兵士が1人やられて、その場に倒れ込む。全滅でゲームオーバー
 function damagePlayer(rawDmg, color){
   if (state !== "play") return;
   if (player.inv > 0) return;                // 被弾直後は短い無敵時間
   player.inv = 0.8;
   player.count -= 1;
-  captives.push({ x: player.x + (Math.random() - 0.5) * 36, y: player.y - 8,
-    vx: (Math.random() - 0.5) * 30, t: 1.5 });
-  floats.push({ x: player.x, y: player.y - 55, text: "兵士が捕虜に!", color: color || "#ff9c9c", t: 1.0 });
+  if (corpses.length > 45) corpses.shift();  // 味方も敵と同じくその場に倒れ込む(血だまり付き)
+  corpses.push({ x: player.x + (Math.random() - 0.5) * 44,
+    y: player.y + (Math.random() - 0.5) * 14,
+    rot: (Math.random() - 0.5) * 0.7, t: 2.6, ally: true });
   shake = Math.max(shake, 0.3); flash = Math.max(flash, 0.2);
   if (player.count <= 0){ player.count = 0; gameOver(); }
 }
@@ -912,14 +927,14 @@ function draw(dt){
     ctx.translate(c.x, c.y);
     ctx.rotate(1.5 + c.rot);                                     // 横倒し
     ctx.scale(2.1, 2.1);
-    ctx.fillStyle = c.mid ? "#3c4152" : "#6a3a30";               // 胴体
+    ctx.fillStyle = c.ally ? "#4a5a3a" : (c.mid ? "#3c4152" : "#6a3a30");   // 胴体
     roundRect(-3.5, -3, 7, 6, 2);
-    ctx.fillStyle = c.mid ? "#20222e" : "#33201a";               // 脚
+    ctx.fillStyle = c.ally ? "#2c3320" : (c.mid ? "#20222e" : "#33201a");   // 脚
     ctx.fillRect(-2.6, 3, 2.2, 4.5);
     ctx.fillRect(0.6, 3, 2.2, 4.5);
-    ctx.fillStyle = "#c9a884";                                   // 頭
+    ctx.fillStyle = c.ally ? "#d8b48c" : "#c9a884";              // 頭
     ctx.beginPath(); ctx.arc(0, -6.3, 2.9, 0, 6.283); ctx.fill();
-    ctx.fillStyle = c.mid ? "#1c1e28" : "#3a231e";               // ずれたヘルメット
+    ctx.fillStyle = c.ally ? "#38452c" : (c.mid ? "#1c1e28" : "#3a231e");   // ずれたヘルメット
     ctx.beginPath(); ctx.arc(1.2, -7.4, 3.1, Math.PI * 0.9, Math.PI * 1.9); ctx.fill();
     ctx.restore();
     ctx.restore();                                               // 遠近変換おわり
@@ -1394,6 +1409,12 @@ function drawEnemy(en){
   const shown = Math.min(en.count, 20);
   const mid = (en.hpPer || 1) > 1;
   beginPersp(en.x, en.y);
+  {                                              // 近づくほど大きく見える(遠近感)
+    const dk = depthK(en.y);
+    ctx.translate(en.x, en.y);
+    ctx.scale(dk, dk);
+    ctx.translate(-en.x, -en.y);
+  }
   if (en.y - r < 0) ctx.globalAlpha = 0.55;      // 完全に画面に入るまでは半透明(無敵)
   for (let i = 0; i < shown; i++){
     const a = i * 2.39996 + en.wob * 0.15;         // 黄金角で散らす
@@ -1454,24 +1475,26 @@ function drawEnemy(en){
     ctx.beginPath(); ctx.moveTo(0.5, -13); ctx.lineTo(0.5, -7.5); ctx.stroke();
   }
   ctx.restore();
-  // 数ラベル+体力ゲージ(中堅兵は青銀色)
+  // 体力ゲージのみ(数字は非表示。中堅兵は枠が青銀色)
   const eHp = Math.max(0, en.count * (en.hpPer || 1) - (en.hpBuf || 0));
   const eMax = Math.max(1, en.maxHp || eHp);
   ctx.fillStyle = mid ? "rgba(30,34,60,0.75)" : "rgba(0,0,0,0.55)";
-  roundRect(en.x - 20, en.y - r - 28, 40, 25, 8);
-  ctx.fillStyle = mid ? "#c8d2ff" : "#ffd6d6";
-  ctx.font = "bold 13px -apple-system, sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(en.count, en.x, en.y - r - 14);
+  roundRect(en.x - 21, en.y - r - 19, 42, 11, 5);
   ctx.fillStyle = "#4a2230";
-  ctx.fillRect(en.x - 16, en.y - r - 10, 32, 3.5);
+  ctx.fillRect(en.x - 17, en.y - r - 15.5, 34, 4);
   ctx.fillStyle = "#ff7a6b";
-  ctx.fillRect(en.x - 16, en.y - r - 10, 32 * Math.min(1, eHp / eMax), 3.5);
+  ctx.fillRect(en.x - 17, en.y - r - 15.5, 34 * Math.min(1, eHp / eMax), 4);
   ctx.globalAlpha = 1;
   ctx.restore();                                 // 遠近変換おわり
 }
 function drawBoss(b){
   beginPersp(b.x, b.y);
+  {                                              // 近づくほど大きく見える(遠近感)
+    const dk = depthK(b.y);
+    ctx.translate(b.x, b.y);
+    ctx.scale(dk, dk);
+    ctx.translate(-b.x, -b.y);
+  }
   if (b.y - b.r < 0) ctx.globalAlpha = 0.55;     // 完全に画面に入るまでは半透明(無敵)
   const bob = Math.sin(b.wob) * 3;
   const r = b.r, cx = b.x, cy = b.y + bob;
@@ -1551,7 +1574,7 @@ function drawBoss(b){
   ctx.fillStyle = "#ffd6d6";
   ctx.font = "bold 12px -apple-system, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("BOSS " + b.hp, b.x, by - 8);
+  ctx.fillText("BOSS", b.x, by - 8);             // 数字は非表示
   ctx.globalAlpha = 1;
   ctx.restore();                                 // 遠近変換おわり
 }
@@ -1681,18 +1704,14 @@ function drawSquad(){
       else drawSoldier(pos.x, pos.y, st.wid);
     }
   }
-  // 数ラベル+体力ゲージ(現在の人数 / これまでの最大人数)
+  // 体力ゲージのみ(数字は非表示。現在の人数 / これまでの最大人数)
   const peak = Math.max(player.peak || 1, player.count, 1);
   ctx.fillStyle = "rgba(0,0,0,0.55)";
-  roundRect(player.x - 25, player.y - 46, 50, 26, 9);
-  ctx.fillStyle = "#cfe4ff";
-  ctx.font = "bold 14px -apple-system, sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText(player.count, player.x, player.y - 32);
+  roundRect(player.x - 24, player.y - 38, 48, 12, 6);
   ctx.fillStyle = "#33222e";
-  ctx.fillRect(player.x - 20, player.y - 28, 40, 4);
+  ctx.fillRect(player.x - 20, player.y - 34, 40, 4.5);
   ctx.fillStyle = "#5df08d";
-  ctx.fillRect(player.x - 20, player.y - 28, 40 * Math.min(1, player.count / peak), 4);
+  ctx.fillRect(player.x - 20, player.y - 34, 40 * Math.min(1, player.count / peak), 4.5);
   ctx.restore();                                 // 遠近変換おわり
 }
 // 戦車(人の約2倍サイズ)に一般兵が乗っている
@@ -1760,7 +1779,7 @@ function drawOver(){
   ctx.textAlign = "center";
   ctx.fillStyle = "#ff6b6b";
   ctx.font = "bold 36px -apple-system, sans-serif";
-  ctx.fillText("全員が捕虜になった…", W/2, 260);
+  ctx.fillText("部隊は全滅した…", W/2, 260);
   ctx.fillStyle = "rgba(255,255,255,0.9)";
   ctx.font = "bold 26px -apple-system, sans-serif";
   ctx.fillText("STAGE " + stage + " まで到達!", W/2, 320);
