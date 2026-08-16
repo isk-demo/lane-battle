@@ -215,7 +215,7 @@ function movePlayer(x, y){
   // (外側の列は道路の路肩にはみ出してもOK)
   const half = Math.min(squadHalfWidth(), 46);
   player.x = Math.max(ROAD_L + half, Math.min(ROAD_R - half, x));
-  if (y !== undefined) player.y = Math.max(150, Math.min(H - 55, y));
+  // 前後(上下)には移動できない。動けるのは左右だけ
 }
 
 // ================= 部隊の隊列 =================
@@ -272,8 +272,8 @@ function randMul(){
   return Math.round((1 + Math.random() * 0.2) * 100) / 100;
 }
 function gateVal(){
-  // 宝箱の数字 = 必要射撃回数 = 現在の人数 × 1〜10倍(ランダム、整数)
-  return Math.max(1, player.count) * (1 + Math.floor(Math.random() * 10));
+  // 宝箱の数字 = 必要射撃回数 = 武器を持っている兵士の数 × 1〜10倍(ランダム、整数)
+  return Math.max(1, armedCount()) * (1 + Math.floor(Math.random() * 10));
 }
 function gateGain(){
   return 1 + Math.floor(Math.random() * 5);  // 撃ち切った時に増える仲間は1〜5人(ランダム)
@@ -600,8 +600,7 @@ function update(dt){
             text: "+" + side.gain + "人救出!", color: "#5df08d", t: 1.3 });
           burst(ccx, g.y - 20, "#5df08d", 18);
         }
-        // どれか1つ取ったら同じ行の他の宝箱は消える
-        for (let i = 0; i < LANES; i++) if (g.slots[i] !== side) g.slots[i] = null;
+        // 同じ行の他の宝箱はそのまま残る(続けて撃ち切れば全部取れる)
       }
     }
     // 通過判定: 緑の連続パネルだけは通過で+1(宝箱は撃ち切りでのみ取得)
