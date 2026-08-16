@@ -1144,20 +1144,35 @@ function drawGate(g){
     if (fl > 0) ctx.translate((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 2);  // 被弾中は震える
     ctx.globalAlpha = s.used ? 0.25 : 1;
     if (s.op === "wpn"){
-      // 武器はシルバーのアタッシュケースの上に載せて表示
+      // 武器は宝箱の上に載せて表示
       const total = WEAPONS[s.wid].ammo + (s.bonus || 0);
-      // ケース
-      const caseGrad = ctx.createLinearGradient(cx - 22, 0, cx + 22, 0);
-      caseGrad.addColorStop(0, "#9aa4b2"); caseGrad.addColorStop(0.5, "#dfe6ee"); caseGrad.addColorStop(1, "#8a94a2");
-      ctx.fillStyle = caseGrad;
-      roundRect(cx - 22, g.y - 30, 44, 17, 4);
-      ctx.fillStyle = "#6e7885";
-      ctx.fillRect(cx - 22, g.y - 23, 44, 2);                    // 留め金ライン
-      ctx.fillRect(cx - 7, g.y - 34, 14, 4);                     // 取っ手
-      ctx.fillStyle = "#c8d2dd";
-      ctx.fillRect(cx - 17, g.y - 22, 5, 3);                     // 金具
-      ctx.fillRect(cx + 12, g.y - 22, 5, 3);
-      drawWeaponIcon(s.wid, cx, g.y - 40);                       // ケースの上に武器
+      // 光る輪
+      ctx.fillStyle = "rgba(255,200,60,0.14)";
+      ctx.beginPath(); ctx.arc(cx, g.y - 30, 30, 0, 6.283); ctx.fill();
+      // 宝箱: アーチ形のフタ
+      ctx.fillStyle = "#7a4e22";
+      ctx.beginPath();
+      ctx.moveTo(cx - 22, g.y - 26);
+      ctx.quadraticCurveTo(cx, g.y - 42, cx + 22, g.y - 26);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#e8c840"; ctx.lineWidth = 2;            // フタの金縁
+      ctx.beginPath();
+      ctx.moveTo(cx - 22, g.y - 26);
+      ctx.quadraticCurveTo(cx, g.y - 42, cx + 22, g.y - 26);
+      ctx.stroke();
+      // 本体
+      ctx.fillStyle = "#8f5c2a";
+      roundRect(cx - 22, g.y - 26, 44, 15, 3);
+      ctx.fillStyle = "#5e3c1a";                                 // フタとの境目
+      ctx.fillRect(cx - 22, g.y - 27, 44, 2);
+      ctx.fillStyle = "#e8c840";                                 // 金の縁と錠前
+      ctx.fillRect(cx - 22, g.y - 26, 3, 15);
+      ctx.fillRect(cx + 19, g.y - 26, 3, 15);
+      ctx.fillRect(cx - 22, g.y - 13, 44, 2.5);
+      roundRect(cx - 4.5, g.y - 25, 9, 10, 2);
+      ctx.fillStyle = "#8a6a1a";
+      ctx.fillRect(cx - 1.5, g.y - 22, 3, 4.5);                  // 鍵穴
+      drawWeaponIcon(s.wid, cx, g.y - 48);                       // 宝箱の上に武器
       ctx.fillStyle = "#ffdf9c";
       ctx.font = "bold 11px -apple-system, sans-serif";
       ctx.textAlign = "center";
@@ -1177,14 +1192,26 @@ function drawGate(g){
         ctx.fillStyle = "rgba(255,255,255," + Math.min(0.5, fl * 1.6).toFixed(2) + ")";
         ctx.fillRect(x0, g.y - 26, x1 - x0, 26);
       }
+      // 増減の対象が「人」だと分かるように人のアイコンを表示
+      drawPersonIcon(cx - 32, g.y - 12, s.op === "add" ? "#a9e0ff" : "#ffb0b0");
       ctx.fillStyle = c.text;
       ctx.font = "bold " + Math.round(20 + fl * 24) + "px -apple-system, sans-serif";  // 数字がポンと跳ねる
       ctx.textAlign = "center";
-      ctx.fillText(gateLabel(s), cx, g.y - 7);
+      ctx.fillText(gateLabel(s), cx + 8, g.y - 7);
     }
     ctx.globalAlpha = 1;
     ctx.restore();
   }
+}
+
+// 人のシルエットアイコン(増減パネル用)
+function drawPersonIcon(x, y, color){
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y - 6, 3.8, 0, 6.283); ctx.fill();   // 頭
+  ctx.beginPath();                                                  // 肩〜胴
+  ctx.moveTo(x - 5.5, y + 7);
+  ctx.quadraticCurveTo(x, y - 2.5, x + 5.5, y + 7);
+  ctx.closePath(); ctx.fill();
 }
 
 // 車・戦車のミニアイコン
