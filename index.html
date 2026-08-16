@@ -278,8 +278,10 @@ function randWpn(){
 function makeGatePair(){
   function one(){
     const r = Math.random();
-    if (r < 0.40) return { op:"add", val: gateVal(), used:false, hits:0 };
-    if (r < 0.70) return { op:"wpn", wid: randWpn(), val: 0, used:false, hits:0 };
+    // 実効割合がプラス40% / 武器40% / マイナス20%になるように補正済み
+    // (「武器は1行に1つ」の変換で武器→プラスに変わる分を上乗せ)
+    if (r < 0.22) return { op:"add", val: gateVal(), used:false, hits:0 };
+    if (r < 0.80) return { op:"wpn", wid: randWpn(), val: 0, used:false, hits:0 };
     return { op:"sub", val: gateVal(), used:false, hits:0 };
   }
   // 3枠それぞれに「ある/ない」のランダム性を持たせる
@@ -308,25 +310,31 @@ function makeGatePair(){
   gateRowsThisStage++;
   gates.push({ y: -60, slots });
 }
-// ステージ難易度に応じた敵の銃
-function enemyGun(){
-  const t = Math.min(stage, 5);
-  if (t === 1) return { spd: 190, n: 3, cd: 1.9, dmg: 1, color: "#ffe680" };   // 拳銃
-  if (t === 2) return { spd: 280, n: 3, cd: 1.7, dmg: 1, color: "#7fe7ff" };   // ライフル
-  if (t === 3) return { spd: 250, n: 6, cd: 1.5, dmg: 1, color: "#ffd27a" };   // マシンガン
-  if (t === 4) return { spd: 230, n: 8, cd: 1.8, dmg: 1, color: "#ffb37a" };   // ショットガン
-  return           { spd: 330, n: 6, cd: 1.3, dmg: 2, color: "#ff9c9c" };      // 強化ライフル
-}
 function makeEnemy(forceMid){
-  // ステージが進むほど、1発では倒れない中堅兵の群れが増える
+  // 装甲兵(強い敵)はステージが進むほど徐々に増える
   const mid = forceMid === true ? true
-    : Math.random() < Math.min(0.12 + stage * 0.04, 0.5);
+    : Math.random() < Math.min(0.05 + (stage - 1) * 0.06, 0.55);
   let n = 3 + Math.floor(effDiff() / 22) + Math.floor(Math.random()*4);
   if (mid) n = Math.max(2, Math.round(n * 0.6));
   const x = ROAD_L + 50 + Math.random() * (ROAD_R - ROAD_L - 100);
+  // 攻撃タイプ: 殴る / 口から毒を吐く / 斧(装甲兵は斧持ちが多い)
+  const rA = Math.random();
+  const atype = mid ? (rA < 0.6 ? "axe" : rA < 0.8 ? "punch" : "poison")
+                    : (rA < 0.55 ? "punch" : rA < 0.85 ? "poison" : "axe");
   enemies.push({ x, y: -50, count: n, wob: Math.random()*6.28,
-    atkT: 0, gun: enemyGun(), gunT: Math.random() * 1.5,
+    atkT: 0.4 + Math.random() * 0.5, atype, swingT: 0,
     hpPer: mid ? 3 : 1, hpBuf: 0 });
+}
+// 毒ブレス: 口から短い毒の息を吐く(近距離のみ、遠くへは飛ばない)
+function breathAttack(x, y, dmg){
+  const dxb = player.x - x, dyb = player.y - y;
+  const base = Math.atan2(dyb, dxb);
+  for (let i = 0; i < 7; i++){
+    const sp = 140 + Math.random() * 70;
+    const ca = base + (Math.random() - 0.5) * 0.55;
+    waves.push({ x, y, vx: Math.cos(ca) * sp, vy: Math.sin(ca) * sp,
+      kind: "breath", dmg, ttl: 0.8 + Math.random() * 0.15, wide: 18 });
+  }
 }
 function addSlash(x, y){
   slashes.push({ x, y, t: 0.22, ang: Math.random() * 0.8 - 0.4 });
@@ -355,6 +363,10 @@ function updateWaves(dt){
   for (const wv of waves){
     wv.x += wv.vx * dt;
     wv.y += wv.vy * dt;
+    if (wv.ttl !== undefined){                    // 毒ブレスは短い距離で消える
+      wv.ttl -= dt;
+      if (wv.ttl <= 0){ wv.dead = true; continue; }
+    }
     if (wv.kind === "bomb"){
       // 爆弾: 着弾地点で爆発、近くにいると爆風ダメージ
       wv.fuse -= dt;
@@ -502,7 +514,7 @@ function update(dt){
       }
     }
     if (holdersN === 0){
-      // 隊長の拳銃(レーンの数字を増減できるのはこの弾だけ)
+      // 隊長の拳銃
       const pos = holderPos(0);
       bullets.push({ x: pos.x, y: pos.y - 16, vx: 0, vy: -pw.bspd, dmg: pw.dmg, wi: 0, pierce: 0, ldr: true });
     }
@@ -518,7 +530,7 @@ function update(dt){
     const pos = holderPos(i);
     let fx = pos.x;
     if (w.jitter) fx += (Math.random() - 0.5) * 6;
-    const isLdr = (i === 0);                       // 隊長の武器の弾だけがレーンを増減できる
+    const isLdr = (i === 0);
     if (w.pierce){                                 // レーザーは斜めに発射(壁で反射する)
       hw.dir = -(hw.dir || 1);
       bullets.push({ x: fx, y: pos.y - 16, vx: hw.dir * 260, vy: -w.bspd * 0.75,
@@ -567,27 +579,19 @@ function update(dt){
   for (const g of gates){
     g.y += dy;
     for (const s of g.slots) if (s){ if (s.flash > 0) s.flash -= dt; if (s.cool > 0) s.cool -= dt; }
-    // 弾との当たり: +/−の増減は隊長の弾のみ(整数単位で変化)。武器の宝箱は撃っても変化しない
+    // 弾との当たり: 誰の弾でも数字が1ずつ変化(プラスは+1、マイナスは−1)。武器の宝箱は素通り
     for (const b of bullets){
       if (b.dead || g.y < b.y - 26 || g.y > b.y + 6) continue;
       const side = g.slots[laneAt(b.x)];
       if (!side || side.used) continue;
       if (side.op === "wpn") continue;             // 武器の宝箱は素通り
-      if (!b.ldr) continue;                        // 数字は隊長の弾だけが反応(他は素通り)
       b.dead = true;
-      const d = (b.dmg || 1);
       side.flash = 0.22;                           // 被弾中の宝箱は光って震える
       if (side.op === "add"){
-        if (!side.chain){                          // 緑の連続パネルは撃っても育たない
-          side.grow = (side.grow || 0) + d;
-          while (side.grow >= 3){                  // 3ヒットごとに数字が育つ
-            side.grow -= 3;
-            side.val += Math.max(1, Math.round(Math.max(1, player.count) * 0.3));
-          }
-        }
+        if (!side.chain) side.val += 1;            // 緑の連続パネルは撃っても育たない
       } else if (side.op === "sub"){
-        side.val -= Math.max(1, Math.round(side.val * 0.06));    // 当たるたび整数で弱まる
-        if (side.val <= 0){ side.op = "add"; side.val = Math.max(1, player.count); } // 撃ち続けるとプラスに反転!
+        side.val -= 1;                             // 撃つと1ずつ弱まる
+        if (side.val <= 0){ side.op = "add"; side.val = 1; }  // 撃ち続けるとプラスに反転!
       }
     }
     // 通過判定(自分のいる枠だけが発動。空き枠なら何も起きない)
@@ -607,7 +611,7 @@ function update(dt){
   }
   gates = gates.filter(g => g.y < H + 80);
 
-  // 敵: プレイヤーめがけて突進し、体ごとぶつかってくる
+  // 敵: プレイヤーめがけて突進し、間合いに入ると殴る/毒を吐く/斧で攻撃する
   for (const en of enemies){
     en.wob += dt * 4;
     const er = enemyRadius(en);
@@ -617,32 +621,26 @@ function update(dt){
       const charge = 55 + (stage - 1) * 8;         // 突進速度(ステージで加速)
       en.x += (dxc / dl) * charge * 0.7 * dt;
       en.y += dy * 0.9 + Math.max(0, dyc / dl) * charge * dt;
-      // 体当たり!
-      if (Math.abs(en.y - player.y) < 28 && Math.abs(en.x - player.x) < er + squadHalfWidth()){
-        burst(en.x, en.y, "#ff6b6b", 16);
-        addSlash(player.x, player.y - 26);
-        damagePlayer(1, "#ff6b6b");
-        en.count = 0;                              // ぶつかった敵は消滅
-        shake = Math.max(shake, 0.3);
-      }
-      // 銃撃: 持っている武器でプレイヤーを狙い撃ち(完全に画面に入ってから)
-      if (en.y - er > 0 && en.y < player.y - 70){
-        en.gunT -= dt;
-        if (en.gunT <= 0){
-          const gn = en.gun;
-          en.gunT = gn.cd + Math.random() * 0.4;
-          const shooters = Math.min(gn.n, en.count);
-          for (let k = 0; k < shooters; k++){
-            const a = k * 2.399963;                // 群れの中の別々の兵が撃つ
-            const rr = Math.sqrt(k + 0.5) * 9;
-            const sxp = en.x + Math.cos(a) * rr, syp = en.y + Math.sin(a) * rr * 0.6;
-            const tx = player.x + (Math.random() - 0.5) * 90;
-            const dxs = tx - sxp, dys = player.y - syp;
-            const dls = Math.hypot(dxs, dys) || 1;
-            waves.push({ x: sxp, y: syp, vx: dxs / dls * gn.spd, vy: dys / dls * gn.spd,
-              kind: "shot", dmg: gn.dmg, color: gn.color });
+      // 攻撃タイプごとの間合いで止まる(毒吐きは少し離れた所から吐く)
+      const reach = en.atype === "poison" ? er * 0.5 + 95 : er * 0.5 + 22;
+      const stopY = player.y - reach;
+      if (en.y > stopY) en.y = stopY;
+      en.swingT = Math.max(0, (en.swingT || 0) - dt);
+      const aligned = Math.abs(en.x - player.x) < er + squadHalfWidth() + 6;
+      if (en.y - er > 0 && en.y >= stopY - 14 && aligned){
+        en.atkT -= dt;
+        if (en.atkT <= 0){
+          en.swingT = 0.25;
+          if (en.atype === "poison"){              // 口から毒を吐く(近距離ブレス)
+            en.atkT = 2.0 + Math.random() * 0.4;
+            breathAttack(en.x, en.y + er * 0.35, 1);
+          } else {                                 // 殴る / 斧を振り下ろす
+            en.atkT = en.atype === "axe" ? 1.5 : 1.0;
+            addSlash(player.x, player.y - 26);
+            burst(player.x, player.y - 20, en.atype === "axe" ? "#cfd6e4" : "#ffb08a", 8);
+            damagePlayer(1, "#ff6b6b");
+            shake = Math.max(shake, 0.2);
           }
-          burst(en.x, en.y + er * 0.3, gn.color, 3);
         }
       }
     }
@@ -713,7 +711,7 @@ function damagePlayer(rawDmg, color){
   if (player.hp <= 0) gameOver();
 }
 
-const BOSS_WEAPONS = ["sword", "axe", "spear", "bow", "whip", "bomb"];
+const BOSS_WEAPONS = ["fist", "sword", "axe", "spear", "poison"];  // 飛び道具は無し
 function spawnBoss(){
   const s = stage - 1;
   const totalHp = 120 + s * 90 + Math.floor(effDiff() * 0.15);
@@ -734,34 +732,6 @@ function spawnBoss(){
     });
   }
   bossFight = true;
-}
-
-// 武器ごとの遠距離攻撃
-function fireBossWave(b){
-  const dxw = player.x - b.x, dyw = player.y - b.y;
-  const dl = Math.hypot(dxw, dyw) || 1;
-  const s1 = stage - 1;
-  b.swingT = 0.25;
-  const from = { x: b.x, y: b.y + b.r * 0.5 };
-  if (b.wtype === "axe"){
-    b.waveCd = 2.0;
-    waves.push({ ...from, vx: dxw/dl*260, vy: dyw/dl*260, big:true, kind:"crescent", dmg: 3 + s1 });
-  } else if (b.wtype === "sword"){
-    b.waveCd = 1.5;
-    waves.push({ ...from, vx: dxw/dl*300, vy: dyw/dl*300, big:false, kind:"crescent", dmg: 2 + Math.floor(s1/2) });
-  } else if (b.wtype === "spear"){
-    b.waveCd = 2.1;
-    waves.push({ ...from, vx: dxw/dl*430, vy: dyw/dl*430, big:false, kind:"spear", dmg: 3 + Math.floor(s1/2) });
-  } else if (b.wtype === "bow"){
-    b.waveCd = 1.1;
-    waves.push({ ...from, vx: dxw/dl*480, vy: dyw/dl*480, big:false, kind:"arrow", dmg: 2 + Math.floor(s1/2) });
-  } else if (b.wtype === "whip"){
-    b.waveCd = 1.9;
-    waves.push({ ...from, vx: dxw/dl*210, vy: dyw/dl*210, big:true, kind:"whip", dmg: 2 + Math.floor(s1/2), wide: 46 });
-  } else {  // bomb
-    b.waveCd = 2.4;
-    waves.push({ ...from, vx: dxw/dl*180, vy: dyw/dl*180, kind:"bomb", dmg: 4 + s1, fuse: dl / 180 });
-  }
 }
 
 function updateBoss(dt){
@@ -806,18 +776,26 @@ function updateBoss(dt){
     if (inMelee){
       b.atkT -= dt;
       if (b.atkT <= 0){
-        b.atkT = 0.9;
+        b.atkT = b.wtype === "fist" ? 0.6 : 0.9;   // 素手は手数が多い
         b.swingT = 0.25;
         addSlash(player.x, player.y - 30);
         addSlash(player.x + 14, player.y - 22);
-        damagePlayer(4 + (stage - 1) * 2, "#ff6b6b");
+        damagePlayer(1, "#ff6b6b");
         shake = Math.max(shake, 0.3); flash = Math.max(flash, 0.15);
         if (state !== "play") return;
       }
-    } else if (b.y > 10){
-      // 遠距離: 武器ごとの攻撃
-      b.waveCd -= dt;
-      if (b.waveCd <= 0) fireBossWave(b);
+    } else if (b.wtype === "poison" && b.y - b.r > 0){
+      // 毒吐きボスだけは、近づくと口から毒を吐く(遠くへは飛ばない)
+      const close = player.y - b.y < b.r + 190
+        && Math.abs(b.x - player.x) < b.r + squadHalfWidth() + 60;
+      if (close){
+        b.waveCd -= dt;
+        if (b.waveCd <= 0){
+          b.waveCd = 2.2;
+          b.swingT = 0.25;
+          breathAttack(b.x, b.y + b.r * 0.45, 1);
+        }
+      }
     }
 
     // 弾との当たり(ボスが完全に画面に入ってから当たる)
@@ -981,13 +959,15 @@ function draw(dt){
     const wps = pf(wv.y);
     ctx.translate(px(wv.x, wv.y), wv.y);
     ctx.scale(wps, wps);
-    if (wv.kind === "shot"){
-      // 敵の銃弾(小さなトレーサー)
-      ctx.rotate(ang);
-      ctx.fillStyle = wv.color || "#ffe680";
-      ctx.fillRect(-5, -1.6, 10, 3.2);
-      ctx.globalAlpha = 0.35;
-      ctx.fillRect(-11, -1.2, 6, 2.4);
+    if (wv.kind === "breath"){
+      // 毒の息(広がりながら薄れる緑の霧)
+      const life = Math.max(0, wv.ttl || 0);
+      ctx.globalAlpha = Math.min(0.55, life * 0.9);
+      ctx.fillStyle = "#7de85c";
+      ctx.beginPath(); ctx.arc(0, 0, 8 + (0.9 - life) * 16, 0, 6.283); ctx.fill();
+      ctx.fillStyle = "#b6f57a";
+      ctx.globalAlpha = Math.min(0.4, life * 0.7);
+      ctx.beginPath(); ctx.arc(3, -3, 4.5, 0, 6.283); ctx.fill();
       ctx.globalAlpha = 1;
     } else if (wv.kind === "bomb"){
       // 爆弾: 黒い球+導火線の火花
@@ -1360,16 +1340,28 @@ function drawEnemy(en){
     }
     ctx.restore();
   }
-  // 構えた銃(プレイヤーの方へ向けている)
+  // 得物(攻撃タイプごと)。攻撃時に振り下ろす
   ctx.save();
   ctx.translate(en.x + r * 0.85, en.y - 2);
-  ctx.rotate(2.6 + Math.sin(en.wob) * 0.1);      // 下(プレイヤー側)へ構える
-  ctx.fillStyle = "#2e3440";
-  ctx.fillRect(-2, -16, 4, 17);                  // 銃身
-  ctx.fillStyle = (en.gun && en.gun.color) || "#ffe680";
-  ctx.fillRect(-2, -16, 4, 3);                   // 銃口アクセント
-  ctx.fillStyle = "#1c222c";
-  ctx.fillRect(-5.5, -1, 9, 3.5);                // グリップ
+  const esw = (en.swingT || 0) > 0 ? (0.25 - en.swingT) * 8 - 0.3 : Math.sin(en.wob) * 0.15;
+  ctx.rotate(esw);
+  if (en.atype === "axe"){
+    ctx.scale(0.55, 0.55);
+    drawBossWeapon("axe");
+  } else if (en.atype === "poison"){
+    // 毒の霧をまとう
+    ctx.fillStyle = "rgba(125,232,92,0.75)";
+    ctx.beginPath(); ctx.arc(0, -8, 5.5, 0, 6.283); ctx.fill();
+    ctx.fillStyle = "rgba(182,245,122,0.6)";
+    ctx.beginPath(); ctx.arc(3, -15, 3.5, 0, 6.283); ctx.fill();
+  } else {
+    // 振り上げた拳(殴る)
+    ctx.fillStyle = "#c9a884";
+    ctx.beginPath(); ctx.arc(0, -9, 4.8, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = "#8a6a4a"; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(-3, -12); ctx.lineTo(-3, -7); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0.5, -13); ctx.lineTo(0.5, -7.5); ctx.stroke();
+  }
   ctx.restore();
   // 数ラベル(中堅兵は青銀色)
   ctx.fillStyle = mid ? "rgba(30,34,60,0.75)" : "rgba(0,0,0,0.55)";
@@ -1490,35 +1482,23 @@ function drawBossWeapon(wtype){
     ctx.beginPath(); ctx.moveTo(-6, -62); ctx.lineTo(0, -78); ctx.lineTo(6, -62); ctx.closePath(); ctx.fill();  // 穂先
     ctx.fillStyle = "#c33";
     ctx.fillRect(-4, -60, 8, 3);
-  } else if (wtype === "bow"){
-    ctx.strokeStyle = "#8a5a2b"; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.arc(-6, -28, 26, -1.35, 1.35); ctx.stroke();  // 弓本体
-    ctx.strokeStyle = "#e8eef8"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(-1, -53); ctx.lineTo(-1, -3); ctx.stroke();  // 弦
-    ctx.strokeStyle = "#d9c9a3"; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.moveTo(-1, -28); ctx.lineTo(22, -28); ctx.stroke(); // 矢
-    ctx.fillStyle = "#e8eef8";
-    ctx.beginPath(); ctx.moveTo(22, -32); ctx.lineTo(29, -28); ctx.lineTo(22, -24); ctx.closePath(); ctx.fill();
-  } else if (wtype === "whip"){
-    ctx.strokeStyle = "#c9508a"; ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.quadraticCurveTo(14, -22, 2, -38);
-    ctx.quadraticCurveTo(-10, -50, 8, -60);
-    ctx.stroke();
-    ctx.fillStyle = "#ff8ab8";
-    ctx.beginPath(); ctx.arc(8, -60, 4, 0, 6.283); ctx.fill();   // 先端
-    ctx.fillStyle = "#5a4326";
-    ctx.fillRect(-3, -4, 6, 10);                                 // 持ち手
-  } else if (wtype === "bomb"){
-    ctx.fillStyle = "#2c3140";
-    ctx.beginPath(); ctx.arc(0, -34, 15, 0, 6.283); ctx.fill();  // 爆弾
-    ctx.fillStyle = "#464e63";
-    ctx.beginPath(); ctx.arc(-5, -39, 5, 0, 6.283); ctx.fill();  // ハイライト
-    ctx.strokeStyle = "#8a5a2b"; ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.moveTo(5, -46); ctx.quadraticCurveTo(12, -54, 9, -60); ctx.stroke();  // 導火線
-    ctx.fillStyle = "#ffd76b";
-    ctx.beginPath(); ctx.arc(9, -60, 3.5, 0, 6.283); ctx.fill(); // 火花
+  } else if (wtype === "fist"){
+    // 握りしめた拳(素手)
+    ctx.fillStyle = "#d8a87c";
+    ctx.beginPath(); ctx.arc(0, -30, 14, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = "#b8875c"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(-9, -38); ctx.lineTo(-9, -30); ctx.stroke();  // 指の節
+    ctx.beginPath(); ctx.moveTo(-3, -40); ctx.lineTo(-3, -31); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(3, -40); ctx.lineTo(3, -31); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(9, -38); ctx.lineTo(9, -30); ctx.stroke();
+  } else if (wtype === "poison"){
+    // 毒の霧(口から吐く)
+    ctx.fillStyle = "rgba(125,232,92,0.8)";
+    ctx.beginPath(); ctx.arc(0, -26, 10, 0, 6.283); ctx.fill();
+    ctx.fillStyle = "rgba(125,232,92,0.55)";
+    ctx.beginPath(); ctx.arc(7, -41, 7, 0, 6.283); ctx.fill();
+    ctx.fillStyle = "rgba(182,245,122,0.5)";
+    ctx.beginPath(); ctx.arc(-3, -52, 5, 0, 6.283); ctx.fill();
   }
 }
 
