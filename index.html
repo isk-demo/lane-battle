@@ -67,7 +67,9 @@ const WEAPONS = [
   { name:"レーザー",     rate:0.09,  dmg:1,  bspd:900, color:"#8affe9", bw:2, bh:24, ammo: 60,  pierce:3 },
   { name:"ロケットランチャー", short:"ロケラン", rate:0.45, dmg:10, bspd:380, color:"#ff7a7a", ammo: 15, missile:true },
   { name:"戦車",         rate:0.35,  dmg:7,  bspd:460, color:"#9fd48a", ammo: 25,  cannon:true, tank:true },
-  { name:"手榴弾",       rate:0.85,  dmg:5,  bspd:300, color:"#a8d86b", ammo: 20,  grenade:true }
+  { name:"手榴弾",       rate:0.85,  dmg:5,  bspd:300, color:"#a8d86b", ammo: 20,  grenade:true },
+  { name:"火炎放射",     short:"火炎", rate:0.06, dmg:1, bspd:340, color:"#ff9c3c", stream:true, range:200 },
+  { name:"毒ガス",       short:"毒ガス", rate:0.09, dmg:1, bspd:290, color:"#8fe85c", stream:true, range:235 }
 ];
 
 // ステージごとに世界観がガラッと変わる背景テーマ
@@ -246,10 +248,9 @@ function formationData(n){
 function squadHalfWidth(){
   return formationData(player.count).half;
 }
-// 隊列の最後尾の位置(武器持ちはここに並ぶ)
+// 隊列の最後尾の位置
 function squadRearY(){
-  const walkers = Math.max(0, player.count - armedCount());
-  return walkers > 0 ? player.y + formationData(walkers).maxY * 0.8 + 24 : player.y + 24;
+  return player.y + formationData(player.count).maxY * 0.8 + 24;
 }
 // i番目の武器の持ち手の位置(最後尾に3列で並ぶ。中央から埋まる)
 const HOLDER_COLS = [0, -1, 1];
@@ -280,20 +281,23 @@ function gateGain(){
 }
 function randWpn(){
   const r = Math.random();
-  if (r < 0.16) return 1;                    // ライフル
-  if (r < 0.30) return 2;                    // マシンガン
-  if (r < 0.44) return 3;                    // ショットガン
-  if (r < 0.55) return 4;                    // 大砲
-  if (r < 0.68) return 5;                    // レーザー
-  if (r < 0.78) return 6;                    // ロケットランチャー
-  if (r < 0.89) return 7;                    // 戦車
-  return 8;                                  // 手榴弾
+  if (r < 0.13) return 1;                    // ライフル
+  if (r < 0.25) return 2;                    // マシンガン
+  if (r < 0.36) return 3;                    // ショットガン
+  if (r < 0.46) return 4;                    // 大砲
+  if (r < 0.56) return 5;                    // レーザー
+  if (r < 0.65) return 6;                    // ロケットランチャー
+  if (r < 0.74) return 7;                    // 戦車
+  if (r < 0.83) return 8;                    // 手榴弾
+  if (r < 0.92) return 9;                    // 火炎放射
+  return 10;                                 // 毒ガス
 }
 function makeGatePair(){
   // マイナスの宝箱は無し。人(プラス)と武器の2種類だけ
   function one(){
     if (Math.random() < 0.5) return { op:"add", val: gateVal(), gain: gateGain(), used:false, hits:0 };
-    return { op:"wpn", wid: randWpn(), val: gateVal(), wn: 1, used:false, hits:0 };
+    // もらえる武器の数は1〜5で固定(撃っても増えない)
+    return { op:"wpn", wid: randWpn(), val: gateVal(), wn: 1 + Math.floor(Math.random() * 5), used:false, hits:0 };
   }
   // 3枠それぞれに「ある/ない」のランダム性を持たせる
   const slots = [];
@@ -505,26 +509,33 @@ function update(dt){
   updateWaves(dt);
 
   // 射撃: 武器を持つ兵士だけが撃てる(武器の種類ごとの連射速度)。
-  // 弾はその武器を構えている兵士の位置から出る(拳銃の人は拳銃、レーザーの人はレーザー)
+  // 弾はその武器を構えている兵士(隊列の後方)の位置から出る
+  const fAll = formationData(player.count);
+  const walkersN = player.count - armedCount();
   let slotsLeft = player.count;
-  let visBase = 0;                                        // 描画中の持ち手の並び位置
+  let armIdx = 0;                                         // 武装兵の通し番号
   for (const st of player.weapons){
     const shooters = Math.min(st.n, slotsLeft);
     slotsLeft -= shooters;
     if (shooters <= 0) continue;
-    const show = Math.min(shooters, 3);                   // 画面に見えている代表の人数
-    const myBase = visBase;
-    visBase += show;
+    const myBase = armIdx;
+    armIdx += shooters;
     const w = WEAPONS[st.wid];
     st.t = (st.t || 0) - dt;
     if (st.t > 0) continue;
     st.t = w.rate;
     const emit = Math.min(shooters, w.spread ? 8 : 24);   // 同時発射数の上限
+    let mp = null;
     for (let k = 0; k < emit; k++){
-      const pos = holderPos(myBase + (k % show));         // その武器の持ち手の位置から発射
-      const fx0 = pos.x + (w.jitter ? (Math.random() - 0.5) * 6 : (k >= show ? (Math.random() - 0.5) * 12 : 0));
-      const fy0 = pos.y - 16;
-      if (w.pierce){                               // レーザーは斜めに発射(壁で反射する)
+      const p = fAll.pts[Math.min(walkersN + myBase + k, fAll.pts.length - 1)];
+      const fx0 = player.x + p.x + (w.jitter ? (Math.random() - 0.5) * 6 : 0);
+      const fy0 = player.y + p.y * 0.8 - 14;
+      if (!mp) mp = { x: fx0, y: fy0 };
+      if (w.stream){                               // 火炎放射・毒ガスは扇状の短射程ストリーム
+        const svx = (Math.random() - 0.5) * 100;
+        bullets.push({ x: fx0, y: fy0, vx: svx, vy: -w.bspd * (0.85 + Math.random() * 0.3),
+          dmg: w.dmg, wi: st.wid, pierce: 0 });
+      } else if (w.pierce){                        // レーザーは斜めに発射(壁で反射する)
         st.dir = -(st.dir || 1);
         bullets.push({ x: fx0, y: fy0, vx: st.dir * 260, vy: -w.bspd * 0.75,
           dmg: w.dmg, wi: st.wid, pierce: w.pierce });
@@ -536,10 +547,11 @@ function update(dt){
       }
     }
     // マズルフラッシュ(その武器の持ち手の位置で光る)
-    const mp = holderPos(myBase);
-    const heavy = w.cannon || w.missile;
-    burst(mp.x, mp.y - 20, w.color, heavy ? 10 : (w.spread ? 6 : 3));
-    if (heavy) shake = Math.max(shake, 0.07);
+    if (mp){
+      const heavy = w.cannon || w.missile;
+      burst(mp.x, mp.y - 6, w.color, heavy ? 10 : (w.spread ? 6 : 3));
+      if (heavy) shake = Math.max(shake, 0.07);
+    }
   }
 
   // 弾
@@ -558,6 +570,11 @@ function update(dt){
         b.vx = -Math.abs(b.vx || 260);
         burst(ROAD_R - 3, b.y, "#8affe9", 4);
       }
+    }
+    // 火炎放射・毒ガスは射程が短い(飛びすぎたら消える)
+    if (bw2.stream){
+      b.trav = (b.trav || 0) + Math.hypot(b.vx || 0, b.vy) * dt;
+      if (b.trav > bw2.range) b.dead = true;
     }
     // 手榴弾は一定距離飛ぶと空中で爆発(範囲攻撃)
     if (bw2.grenade){
@@ -583,7 +600,6 @@ function update(dt){
       b.dead = true;
       side.flash = 0.22;                           // 被弾中の宝箱は光って震える
       side.val -= 1;
-      if (side.op === "wpn") side.wn = (side.wn || 1) + 1;   // 撃つほどもらえる武器が増える
       if (side.val <= 0){                          // 撃ち切った! 宝箱が開く
         side.used = true;
         const ccx = ROAD_L + (lane + 0.5) * laneW();
@@ -968,6 +984,16 @@ function draw(dt){
       ctx.globalAlpha = 0.25;
       ctx.fillStyle = "#a8d86b";
       ctx.beginPath(); ctx.arc(b.x, b.y, 10, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 1;
+    } else if (w.stream){
+      // 火炎放射・毒ガス: 飛ぶほど広がって薄くなる噴射の粒
+      const tt = Math.min(1, (b.trav || 0) / (w.range || 200));
+      ctx.globalAlpha = 0.75 * (1 - tt * 0.65);
+      ctx.fillStyle = w.color;
+      ctx.beginPath(); ctx.arc(b.x, b.y, 3 + tt * 10, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 0.5 * (1 - tt * 0.5);
+      ctx.fillStyle = b.wi === 9 ? "#ffd76b" : "#c8ffa0";      // 芯の色(炎=黄 / ガス=淡緑)
+      ctx.beginPath(); ctx.arc(b.x, b.y - 2, 1.8 + tt * 4, 0, 6.283); ctx.fill();
       ctx.globalAlpha = 1;
     } else if (w.missile){
       ctx.fillStyle = "#e8e8e8";
@@ -1400,6 +1426,23 @@ function drawWeaponIcon(wid, x, y){
     ctx.fillRect(2, -16, 8, 3);                                  // レバー
     ctx.strokeStyle = "#e8c840"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(-5, -15, 3.5, 0, 6.283); ctx.stroke();  // ピンのリング
+  } else if (wid === 9){     // 火炎放射器: 燃料タンク+ノズル+炎
+    ctx.fillStyle = "#b33a2a"; ctx.fillRect(-15, -9, 8, 12);      // 燃料タンク
+    ctx.fillStyle = DARK;  ctx.fillRect(-8, -3, 14, 6);           // 本体
+    ctx.fillStyle = METAL; ctx.fillRect(5, -2, 8, 4);             // ノズル
+    ctx.fillStyle = ACC;
+    ctx.beginPath(); ctx.arc(16, 0, 4.5, 0, 6.283); ctx.fill();   // 噴き出す炎
+    ctx.fillStyle = "#ffd76b";
+    ctx.beginPath(); ctx.arc(18, 0, 2.2, 0, 6.283); ctx.fill();
+  } else if (wid === 10){    // 毒ガス噴射器: ボンベ+ホース+ガス雲
+    ctx.fillStyle = "#3e6b3e"; ctx.fillRect(-14, -9, 8, 14);      // ボンベ
+    ctx.fillStyle = "#8a8a8a"; ctx.fillRect(-13, -12, 6, 3);      // バルブ
+    ctx.fillStyle = METAL; ctx.fillRect(-6, -2, 13, 4);           // ノズル
+    ctx.fillStyle = ACC;
+    ctx.globalAlpha *= 0.85;
+    ctx.beginPath(); ctx.arc(10, -1, 4.5, 0, 6.283); ctx.fill();  // ガス雲
+    ctx.beginPath(); ctx.arc(15, -5, 3.2, 0, 6.283); ctx.fill();
+    ctx.globalAlpha /= 0.85;
   }
   ctx.restore();
 }
@@ -1449,6 +1492,13 @@ function drawEnemy(en){
       ctx.fillRect(-4.6, -4.2, 2, 3);
       ctx.fillRect(2.6, -4.2, 2, 3);
     }
+    // 一人ひとりの体力ゲージ(先頭の1体はダメージの残りHPを表示)
+    const uf = i === 0
+      ? Math.max(0, ((en.hpPer || 1) - (en.hpBuf || 0)) / (en.hpPer || 1)) : 1;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(-4.4, -14.2, 8.8, 2.3);
+    ctx.fillStyle = "#ff7a6b";
+    ctx.fillRect(-3.9, -13.7, 7.8 * uf, 1.4);
     ctx.restore();
   }
   // 得物(攻撃タイプごと)。攻撃時に振り下ろす
@@ -1641,6 +1691,11 @@ function drawSoldier(sx, sy, wid){
   ctx.fillStyle = "#38452c";                               // ミリタリーヘルメット
   ctx.beginPath(); ctx.arc(0, -9, 3.9, Math.PI, 0); ctx.fill();
   ctx.fillRect(-4, -9.6, 8, 1.7);                          // つば
+  // 一人ひとりの体力ゲージ(頭の上の小さな緑バー)
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(-4.6, -15.2, 9.2, 2.4);
+  ctx.fillStyle = "#5df08d";
+  ctx.fillRect(-4.1, -14.7, 8.2, 1.4);
   // 構えている武器(未指定なら素手=拳を構える)
   if (wid === undefined){
     ctx.fillStyle = "#d8b48c";
@@ -1688,19 +1743,28 @@ function drawSquad(){
   beginPersp(player.x, player.y);
   // 被弾後の無敵時間中は点滅する
   if (player.inv > 0 && Math.floor(player.inv * 12) % 2 === 0) ctx.globalAlpha = 0.45;
-  const walkers = Math.max(0, player.count - armedCount());  // 素手の一般兵
-  if (walkers > 0){
-    const f = formationData(walkers);
-    for (const p of f.pts) drawSoldier(player.x + p.x, player.y + p.y * 0.8);
+  // 全員を1つの隊列で描く(左上の人数と表示される人数は必ず一致する)
+  // 前方=素手の兵士、後方=武器持ちの兵士(武器ごとの見た目で並ぶ)
+  const f = formationData(player.count);
+  const walkers = Math.max(0, player.count - armedCount());
+  const wids = [];                                 // 武装兵に持たせる武器の並び
+  {
+    let left = player.count;
+    for (const st of player.weapons){
+      const k2 = Math.min(st.n, left);
+      for (let q = 0; q < k2; q++) wids.push(st.wid);
+      left -= k2;
+    }
   }
-  // 武器持ちの兵士は最後尾に並ぶ(種類ごとに代表を表示)。戦車は大きく描いて兵士が乗る
-  let di = 0;
-  for (const st of player.weapons){
-    const show = Math.min(st.n, 3);
-    for (let k = 0; k < show && di < 9; k++){
-      const pos = holderPos(di); di++;
-      if (st.wid === 7 && k === 0) drawTankRide(pos.x, pos.y);
-      else drawSoldier(pos.x, pos.y, st.wid);
+  for (let i = 0; i < f.pts.length; i++){
+    const p = f.pts[i];
+    const sx = player.x + p.x, sy = player.y + p.y * 0.8;
+    if (i < walkers){
+      drawSoldier(sx, sy);                         // 素手
+    } else {
+      const wid = wids[i - walkers];
+      if (wid === 7) drawTankRide(sx, sy);         // 戦車は大きく描いて兵士が乗る
+      else drawSoldier(sx, sy, wid);
     }
   }
   // 体力ゲージのみ(数字は非表示。現在の人数 / これまでの最大人数)
