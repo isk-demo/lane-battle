@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LANE BATTLE UIモック(アスキーアート / ドット絵)</title>
+<style>
+  body { background: #05070e; color: #e8eef8; font-family: -apple-system, "Hiragino Sans", sans-serif;
+    margin: 0; padding: 20px 12px 60px; }
+  h1 { font-size: 19px; color: #ffd76b; text-align: center; margin: 0 0 4px; }
+  p.note { font-size: 12px; color: #9aa4b8; text-align: center; margin: 4px 0 20px; line-height: 1.7; }
+  .row { display: flex; flex-wrap: wrap; gap: 22px; justify-content: center; align-items: flex-start; }
+  .panel { text-align: center; }
+  .panel h2 { font-size: 14px; color: #8fc1ff; margin: 0 0 8px; }
+  /* ---- パターンA: アスキーアート ---- */
+  pre.ascii {
+    background: #020803; color: #58e05c; border: 2px solid #1d4a20; border-radius: 10px;
+    font-family: "Menlo", "Osaka-Mono", monospace; font-size: 12.5px; line-height: 1.28;
+    padding: 12px 14px; margin: 0; text-align: left; display: inline-block;
+    text-shadow: 0 0 6px rgba(88,224,92,0.45);
+  }
+  pre.ascii .y { color: #ffd76b; text-shadow: 0 0 6px rgba(255,215,107,0.5); }
+  pre.ascii .r { color: #ff7a6b; text-shadow: 0 0 6px rgba(255,122,107,0.5); }
+  pre.ascii .b { color: #7fb2ff; text-shadow: 0 0 6px rgba(127,178,255,0.5); }
+  pre.ascii .w { color: #cfd6e4; }
+  pre.ascii .d { color: #2a6a2e; }
+  /* ---- パターンB: ドット絵 ---- */
+  canvas { image-rendering: pixelated; border: 2px solid #2a3550; border-radius: 10px; background: #0b0f1c; }
+</style>
+</head>
+<body>
+  <h1>🎮 LANE BATTLE UIモック(仮)</h1>
+  <p class="note">競合アプリ風の作り込みデザインの代わりに、軽く作れる2パターンの仮UIです。<br>
+  気に入った方を教えてもらえれば、ゲーム本体をこのスタイルに置き換えます。</p>
+  <div class="row">
+    <div class="panel">
+      <h2>パターンA: アスキーアート(レトロ端末風)</h2>
+      <pre class="ascii" id="asciiArt"></pre>
+    </div>
+    <div class="panel">
+      <h2>パターンB: ドット絵(8bitピクセル風)</h2>
+      <canvas id="px" width="200" height="340" style="width:300px;height:510px"></canvas>
+    </div>
+  </div>
+<script>
+// ================= パターンA: アスキーアート =================
+const A = `
+<span class="w">┌─────────────────────────────┐</span>
+<span class="w">│</span><span class="y"> STAGE 1/10        ボスまで 380m </span><span class="w">│</span>
+<span class="w">│</span> 幹部 6/10  特攻 4   <span class="y">拳銃x6 刀x2</span>  <span class="w">│</span>
+<span class="w">├─────────────────────────────┤</span>
+<span class="d">│ ‥ │      │      │      │ ‥ │</span>
+<span class="w">│</span>   <span class="b">╔══◆══╗</span>  <span class="y">╔══════╗</span>          <span class="w">│</span>
+<span class="w">│</span>   <span class="b">║ 12  ║</span>  <span class="y">║ 8 x4 ║</span>          <span class="w">│</span>
+<span class="w">│</span>   <span class="b">╚[幹部]╝</span>  <span class="y">╚[大砲]╝</span>          <span class="w">│</span>
+<span class="d">│ ‥ │      │      │      │ ‥ │</span>
+<span class="w">│</span>        <span class="r">▓▓  ▓▓▓  ▓▓</span>           <span class="w">│</span>
+<span class="w">│</span>        <span class="r">▓▓▓ [敵] ▓▓▓</span>          <span class="w">│</span>
+<span class="w">│</span>         <span class="r">└─███─┘</span>            <span class="w">│</span>
+<span class="d">│ ‥ │      │      │      │ ‥ │</span>
+<span class="w">│</span>       <span class="r">♦</span> <span class="r">♦</span> <span class="r">♦</span> <span class="r">♦</span>  <span class="w">←特攻部隊</span>   <span class="w">│</span>
+<span class="w">│</span>          <span class="y">↑↑↑</span>               <span class="w">│</span>
+<span class="w">│</span>      <span class="b">♟♟♟♟♟♟</span>  <span class="w">←幹部</span>       <span class="w">│</span>
+<span class="w">│</span>      <span class="b">♟♟</span><span class="y">⛟</span><span class="b">♟♟</span>   <span class="w">←戦車</span>       <span class="w">│</span>
+<span class="w">└─────────────────────────────┘</span>`;
+document.getElementById("asciiArt").innerHTML = A.trim();
+
+// ================= パターンB: ドット絵 =================
+const cv = document.getElementById("px"), ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+const P = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+
+// 背景と道路
+P(0, 0, 200, 340, "#0b0f1c");
+P(30, 0, 140, 340, "#1a2136");
+for (let y = 0; y < 340; y += 4){ P(30, y, 2, 2, "#3a4a76"); P(168, y, 2, 2, "#3a4a76"); }
+for (let y = 8; y < 340; y += 16){ P(76, y, 2, 8, "#2c3860"); P(122, y, 2, 8, "#2c3860"); }
+
+// 8x8 ドット兵士(幹部: 緑)
+function soldier(x, y, hair, uniform, skin){
+  P(x+2, y,   4, 2, hair);     // ヘルメット
+  P(x+2, y+2, 4, 2, skin);     // 顔
+  P(x+1, y+4, 6, 3, uniform);  // 体
+  P(x+2, y+7, 2, 2, "#1c2414");// 足
+  P(x+5, y+7, 2, 2, "#1c2414");
+}
+// 敵(茶)/装甲(灰)
+function enemy(x, y, armored){
+  const u = armored ? "#565e78" : "#6a3a30";
+  const h = armored ? "#20222e" : "#3a231e";
+  P(x+2, y,   4, 2, h);
+  P(x+2, y+2, 4, 1, armored ? "#a8a8b8" : "#c9a884");
+  P(x+3, y+2, 2, 1, "#ff4040");        // 赤い目
+  P(x+1, y+3, 6, 4, u);
+  P(x+2, y+7, 2, 2, "#181410");
+  P(x+5, y+7, 2, 2, "#181410");
+}
+// 特攻(赤ベレー)
+function raider(x, y){
+  P(x+2, y,   4, 2, "#a83232");
+  P(x+2, y+2, 4, 2, "#d8b48c");
+  P(x+1, y+4, 6, 3, "#5c4a3a");
+  P(x+2, y+7, 2, 2, "#1c2414");
+  P(x+5, y+7, 2, 2, "#1c2414");
+  P(x+7, y+3, 2, 3, "#cfd6e4");        // ナイフ
+}
+// 宝箱
+function chest(x, y, lid, body, trim){
+  P(x, y+2, 16, 8, body);
+  P(x, y,   16, 3, lid);
+  P(x, y+4, 16, 1, trim);
+  P(x+6, y+3, 4, 4, trim);             // 錠前
+}
+// 檻
+function cage(x, y, tint){
+  P(x, y, 22, 12, "#10141f");
+  for (let i = 0; i <= 22; i += 5) P(x+i, y, 1, 12, "#9aa4b8");
+  P(x, y, 22, 1, "#9aa4b8"); P(x, y+11, 22, 1, "#9aa4b8");
+  P(x+3, y+3, 3, 6, tint); P(x+9, y+3, 3, 6, tint); P(x+15, y+3, 3, 6, tint);
+}
+// 戦車
+function tank(x, y){
+  P(x, y+4, 20, 6, "#4e6b4a");
+  P(x+2, y+8, 3, 3, "#2f4230"); P(x+8, y+8, 3, 3, "#2f4230"); P(x+14, y+8, 3, 3, "#2f4230");
+  P(x+5, y,   9, 5, "#5e8257");
+  P(x+13, y+1, 8, 2, "#7aa06f");       // 砲身
+}
+
+// --- レーン行(檻 + 武器宝箱) ---
+ctx.fillStyle = "#8fc1ff"; ctx.font = "7px monospace"; ctx.textAlign = "center";
+cage(44, 34, "#a9d4ff");
+ctx.fillText("12", 55, 31);
+ctx.fillText("幹部", 55, 56);
+chest(120, 38, "#7a4e22", "#8f5c2a", "#e8c840");
+ctx.fillStyle = "#ffd76b";
+ctx.fillText("8 x4", 128, 31);
+ctx.fillText("大砲", 128, 56);
+
+// --- 敵の群れ(ゲージ付き) ---
+enemy(80, 92, false); enemy(96, 88, false); enemy(112, 92, true);
+enemy(88, 104, false); enemy(104, 104, false);
+P(84, 80, 34, 4, "#000"); P(85, 81, 32, 2, "#4a2230"); P(85, 81, 22, 2, "#ff7a6b");
+
+// --- 特攻部隊(敵の手前に集団) ---
+raider(78, 130); raider(92, 134); raider(106, 130); raider(120, 134);
+
+// --- 弾 ---
+P(98, 160, 2, 5, "#ffe680"); P(88, 175, 2, 5, "#ffe680"); P(110, 170, 2, 5, "#ffe680");
+P(70, 185, 3, 3, "#8affe9"); P(126, 190, 3, 3, "#8affe9");
+
+// --- 幹部の隊列 + 戦車 ---
+soldier(76, 235, "#38452c", "#4a5a3a", "#d8b48c");
+soldier(92, 235, "#38452c", "#4a5a3a", "#d8b48c");
+soldier(108, 235, "#38452c", "#4a5a3a", "#d8b48c");
+soldier(84, 250, "#38452c", "#4a5a3a", "#d8b48c");
+soldier(100, 250, "#38452c", "#4a5a3a", "#d8b48c");
+tank(88, 264);
+for (const sx of [76, 92, 108]) { P(sx+1, 232, 6, 2, "#000"); P(sx+2, 232, 4, 1, "#5df08d"); }
+for (const sx of [84, 100])     { P(sx+1, 247, 6, 2, "#000"); P(sx+2, 247, 4, 1, "#5df08d"); }
+
+// --- HUD ---
+ctx.textAlign = "left";
+ctx.fillStyle = "#ffd76b"; ctx.font = "8px monospace";
+ctx.fillText("STAGE 1/10", 132, 12);
+ctx.fillStyle = "#9cc4ff";
+ctx.fillText("幹部6/10 特攻4", 6, 12);
+ctx.fillStyle = "#8a93a8"; ctx.font = "7px monospace";
+ctx.fillText("拳銃x6 ﾅｲﾌx2", 6, 22);
+</script>
+</body>
+</html>

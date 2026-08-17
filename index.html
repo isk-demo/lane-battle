@@ -852,6 +852,13 @@ function update(dt){
         }
       }
       if (blockY < Infinity && en.y > blockY - 48) en.y = blockY - 48;
+      // 特攻部隊が生きている間は、特攻より下(手前)へは絶対に来ない
+      if (raiders.length > 0){
+        let topR = Infinity;
+        for (const rdd of raiders) if (!rdd.dead) topR = Math.min(topR, rdd.y);
+        const limitY = topR - er * 0.5 - 10;
+        if (topR < Infinity && en.y > limitY) en.y = limitY;
+      }
       // 攻撃タイプごとの間合いで止まる(毒吐きは少し離れた所から吐く)
       const reach = en.atype === "poison" ? er * 0.5 + 95 : er * 0.5 + 22;
       const stopY = player.y - reach;
