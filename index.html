@@ -78,7 +78,30 @@ const MELEE = [
   { name:"ナイフ",     dmg:3, rate:0.55 },
   { name:"チェンソー", dmg:7, rate:0.45 }
 ];
-// 武器の強さ設定を読み込む(weapon_config.html で編集して保存すると、同じサイトのゲームに反映される)
+// 難易度調整パラメータ(weapon_config.html で変更できる)
+const DIFF = {
+  officerW: 1,        // 幹部の出現の重み(特攻:幹部 = assaultW:officerW)
+  assaultW: 3,        // 特攻部隊の出現の重み
+  peopleShare: 0.5,   // レーンのうち「人の檻」が出る割合(残りは武器)
+  meleeShare: 0.25,   // 武器のうち近接武器が出る割合
+  valMulMax: 10,      // 宝箱の数字 = 武器所持数 × 1〜この倍率
+  gainMax: 5,         // 檻から出てくる人数 = 1〜この値
+  wpnMax: 5,          // 武器宝箱でもらえる本数 = 1〜この値
+  enemyBase: 3,       // 雑魚の人数 = enemyBase + 進行距離÷enemyDiv + 0〜3
+  enemyDiv: 22,
+  midBase: 0.30,      // 装甲兵の出現率 = midBase + (ステージ-1)×midPerStage (上限midCap)
+  midPerStage: 0.04,
+  midCap: 0.65,
+  chargeBase: 55,     // 敵の突進速度 = chargeBase + (ステージ-1)×chargePerStage
+  chargePerStage: 8,
+  bossHpBase: 120,    // ボスHP = bossHpBase + (ステージ-1)×bossHpPerStage + 進行距離×0.15
+  bossHpPerStage: 90,
+  bossDist: 440,      // ボスが出るまでの距離(m)
+  speedBase: 48,      // スクロール速度 = speedBase + 進行距離×speedFactor (上限speedCap)
+  speedFactor: 0.16,
+  speedCap: 96
+};
+// 武器の強さ・難易度設定を読み込む(weapon_config.html で編集して保存すると、同じサイトのゲームに反映される)
 try {
   const cfg = JSON.parse(localStorage.getItem("lb_weapon_cfg") || "null");
   if (cfg){
@@ -94,6 +117,12 @@ try {
         if (c.rate > 0) MELEE[i].rate = +c.rate;
       }
     });
+    if (cfg.diff){
+      for (const k in DIFF){
+        const v = +cfg.diff[k];
+        if (isFinite(v) && v >= 0) DIFF[k] = v;
+      }
+    }
   }
 } catch (e) { /* localStorageが使えない環境ではデフォルト値で動く */ }
 
@@ -165,7 +194,7 @@ function reset(){
   bosses = [];
   bossFight = false;
   bossWarnT = 0;
-  nextBossAt = 440;                          // 各ステージ440m地点でボス(さらに約10秒延長)
+  nextBossAt = DIFF.bossDist;                // 各ステージのボス出現距離(コンフィグで変更可)
   floats = [];                               // 浮かぶテキスト
   bossShots = [];
   slashes = [];                              // 斬撃エフェクト
@@ -309,11 +338,15 @@ function randMul(){
   return Math.round((1 + Math.random() * 0.2) * 100) / 100;
 }
 function gateVal(){
-  // 宝箱の数字 = 必要射撃回数 = 武器を持っている兵士の数 × 1〜10倍(ランダム、整数)
-  return Math.max(1, armedCount()) * (1 + Math.floor(Math.random() * 10));
+  // 宝箱の数字 = 必要射撃回数 = 武器を持っている兵士の数 × 1〜valMulMax倍(ランダム、整数)
+  return Math.max(1, armedCount()) * (1 + Math.floor(Math.random() * DIFF.valMulMax));
 }
 function gateGain(){
-  return 1 + Math.floor(Math.random() * 5);  // 撃ち切った時に増える仲間は1〜5人(ランダム)
+  return 1 + Math.floor(Math.random() * DIFF.gainMax);  // 檻から出てくる仲間の人数
+}
+function randKind(){
+  // 特攻:幹部 = assaultW:officerW の比率で出現
+  return Math.random() < DIFF.assaultW / (DIFF.assaultW + DIFF.officerW) ? "assault" : "officer";
 }
 function randWpn(){
   const r = Math.random();
@@ -329,14 +362,15 @@ function randWpn(){
   return 10;                                 // 毒ガス
 }
 function makeGatePair(){
-  // 人(幹部/特攻)と武器(銃/近接)の宝箱。幹部と特攻はバランスよく出る
+  // 人(幹部/特攻)と武器(銃/近接)の宝箱。特攻:幹部 = 3:1(コンフィグで変更可)
   function one(){
-    const r = Math.random();
-    if (r < 0.25) return { op:"add", kind:"officer", val: gateVal(), gain: gateGain(), used:false, hits:0 };
-    if (r < 0.50) return { op:"add", kind:"assault", val: gateVal(), gain: gateGain(), used:false, hits:0 };
-    // もらえる武器の数は1〜5で固定(撃っても増えない)
-    if (r < 0.83) return { op:"wpn", wid: randWpn(), val: gateVal(), wn: 1 + Math.floor(Math.random() * 5), used:false, hits:0 };
-    return { op:"mwpn", mid: 1 + Math.floor(Math.random() * 3), val: gateVal(), wn: 1 + Math.floor(Math.random() * 5), used:false, hits:0 };
+    if (Math.random() < DIFF.peopleShare)
+      return { op:"add", kind: randKind(), val: gateVal(), gain: gateGain(), used:false, hits:0 };
+    // もらえる武器の数は1〜wpnMaxで固定(撃っても増えない)
+    const wn = 1 + Math.floor(Math.random() * DIFF.wpnMax);
+    if (Math.random() < DIFF.meleeShare)
+      return { op:"mwpn", mid: 1 + Math.floor(Math.random() * 3), val: gateVal(), wn, used:false, hits:0 };
+    return { op:"wpn", wid: randWpn(), val: gateVal(), wn, used:false, hits:0 };
   }
   // 3枠それぞれに「ある/ない」のランダム性を持たせる
   const slots = [];
@@ -346,7 +380,7 @@ function makeGatePair(){
   let seenW = false;
   for (let i = 0; i < LANES; i++){
     if (slots[i] && (slots[i].op === "wpn" || slots[i].op === "mwpn")){
-      if (seenW) slots[i] = { op:"add", kind: Math.random() < 0.5 ? "officer" : "assault",
+      if (seenW) slots[i] = { op:"add", kind: randKind(),
         val: gateVal(), gain: gateGain(), used:false, hits:0 };
       seenW = true;
     }
@@ -357,8 +391,8 @@ function makeGatePair(){
 function makeEnemy(forceMid){
   // 装甲兵(強い敵)はステージ1から多め、ステージが進むほどさらに増える
   const mid = forceMid === true ? true
-    : Math.random() < Math.min(0.30 + (stage - 1) * 0.04, 0.65);
-  let n = 3 + Math.floor(effDiff() / 22) + Math.floor(Math.random()*4);
+    : Math.random() < Math.min(DIFF.midBase + (stage - 1) * DIFF.midPerStage, DIFF.midCap);
+  let n = DIFF.enemyBase + Math.floor(effDiff() / Math.max(1, DIFF.enemyDiv)) + Math.floor(Math.random()*4);
   if (mid) n = Math.max(2, Math.round(n * 0.6));
   const x = ROAD_L + 50 + Math.random() * (ROAD_R - ROAD_L - 100);
   // 攻撃タイプ: 殴る / 口から毒を吐く / 斧(装甲兵は斧持ちが多い)
@@ -586,7 +620,7 @@ function update(dt){
   if (state !== "play"){ if (state === "over" || state === "win") overT += dt; updateFx(dt); return; }
 
   meters += (speed * dt) / 10;
-  speed = Math.min(48 + effDiff() * 0.16, 96);   // 5割減速
+  speed = Math.min(DIFF.speedBase + effDiff() * DIFF.speedFactor, DIFF.speedCap);
   if (stageBannerT > 0) stageBannerT -= dt;
   const dy = speed * dt;
 
@@ -779,7 +813,7 @@ function update(dt){
     if (en.count > 0){
       const dxc = player.x - en.x, dyc = player.y - en.y;
       const dl = Math.hypot(dxc, dyc) || 1;
-      const charge = 55 + (stage - 1) * 8;         // 突進速度(ステージで加速)
+      const charge = DIFF.chargeBase + (stage - 1) * DIFF.chargePerStage;   // 突進速度(ステージで加速)
       en.x += (dxc / dl) * charge * 0.7 * dt;
       en.y += dy * 0.9 + Math.max(0, dyc / dl) * charge * dt;
       // 攻撃タイプごとの間合いで止まる(毒吐きは少し離れた所から吐く)
@@ -906,7 +940,7 @@ function damagePlayer(rawDmg, color){
 const BOSS_WEAPONS = ["fist", "sword", "axe", "spear", "poison"];  // 飛び道具は無し
 function spawnBoss(){
   const s = stage - 1;
-  const totalHp = 120 + s * 90 + Math.floor(effDiff() * 0.15);
+  const totalHp = DIFF.bossHpBase + s * DIFF.bossHpPerStage + Math.floor(effDiff() * 0.15);
   const roll = Math.random();
   const n = roll < 0.45 ? 1 : roll < 0.8 ? 2 : 3;         // 1体/2体/3体
   for (let i = 0; i < n; i++){
@@ -1031,7 +1065,7 @@ function updateBoss(dt){
     gates = []; enemies = []; bullets = []; bossShots = []; waves = []; corpses = [];
     spawnDist = 30;                          // 新ステージ開始3秒以内にレーンが出る
     gateRowsThisStage = 0;                   // 新ステージ最初の行はプラスから
-    nextBossAt = stageStartM + 440;
+    nextBossAt = stageStartM + DIFF.bossDist;
   }
 }
 
@@ -1941,14 +1975,7 @@ function drawSquad(){
       else drawSoldier(sx, sy, wid);
     }
   }
-  // 体力ゲージのみ(数字は非表示。現在の人数 / これまでの最大人数)
-  const peak = Math.max(player.peak || 1, player.count, 1);
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  roundRect(player.x - 24, player.y - 38, 48, 12, 6);
-  ctx.fillStyle = "#33222e";
-  ctx.fillRect(player.x - 20, player.y - 34, 40, 4.5);
-  ctx.fillStyle = "#5df08d";
-  ctx.fillRect(player.x - 20, player.y - 34, 40 * Math.min(1, player.count / peak), 4.5);
+  // (部隊全体の大きいゲージは廃止。体力表示は一人ひとりの小さいバーのみ)
   ctx.restore();                                 // 遠近変換おわり
 }
 // 特攻部隊の近接武器アイコン(棍棒・ナイフ・チェンソー)

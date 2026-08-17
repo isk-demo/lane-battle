@@ -47,6 +47,14 @@
     <tr><th>武器</th><th>攻撃力</th><th>攻撃間隔(秒)</th></tr>
   </table>
 
+  <h2>🎚 難易度調整(出現割合・計算式)</h2>
+  <p class="note" style="margin-top:2px">
+    ゲーム内の計算式に使われる値です。カッコ内が計算式。小数もOK。
+  </p>
+  <table id="diffT">
+    <tr><th>項目</th><th>値</th></tr>
+  </table>
+
   <div class="btns">
     <button id="save">保存してゲームに反映</button>
     <button id="resetBtn">初期値に戻す</button>
@@ -74,6 +82,29 @@ const DEF_MELEE = [
   { name:"ナイフ",       dmg:3, rate:0.55 },
   { name:"チェンソー",   dmg:7, rate:0.45 }
 ];
+// 難易度パラメータ(ゲーム本体と同じ初期値)
+const DEF_DIFF = [
+  { key:"assaultW",     def:3,    label:"特攻部隊の出現の重み", note:"特攻:幹部 = この値:下の値 の比率で檻が出る(初期は3:1)" },
+  { key:"officerW",     def:1,    label:"幹部の出現の重み", note:"" },
+  { key:"peopleShare",  def:0.5,  label:"人の檻が出る割合", note:"レーンのうち人の檻の割合(0〜1)。残りは武器の宝箱" },
+  { key:"meleeShare",   def:0.25, label:"近接武器の割合", note:"武器の宝箱のうち近接武器(特攻用)の割合(0〜1)" },
+  { key:"valMulMax",    def:10,   label:"宝箱の数字の最大倍率", note:"数字 = 武器所持数 × 1〜この倍率" },
+  { key:"gainMax",      def:5,    label:"檻から出る人数の最大", note:"1〜この人数がランダムで出てくる" },
+  { key:"wpnMax",       def:5,    label:"武器の本数の最大", note:"武器宝箱でもらえる本数 = 1〜この値" },
+  { key:"enemyBase",    def:3,    label:"雑魚の基本人数", note:"人数 = この値 + 進行距離÷下の値 + 0〜3" },
+  { key:"enemyDiv",     def:22,   label:"雑魚の増える速さ(割る数)", note:"小さいほど雑魚が早く増える" },
+  { key:"midBase",      def:0.3,  label:"装甲兵の出現率(ステージ1)", note:"出現率 = この値 + (ステージ-1)×増加分" },
+  { key:"midPerStage",  def:0.04, label:"装甲兵のステージごとの増加分", note:"" },
+  { key:"midCap",       def:0.65, label:"装甲兵の出現率の上限", note:"" },
+  { key:"chargeBase",   def:55,   label:"敵の突進速度(ステージ1)", note:"速度 = この値 + (ステージ-1)×増加分" },
+  { key:"chargePerStage", def:8,  label:"突進速度のステージごとの増加分", note:"" },
+  { key:"bossHpBase",   def:120,  label:"ボスHP(ステージ1)", note:"HP = この値 + (ステージ-1)×増加分 + 進行距離×0.15" },
+  { key:"bossHpPerStage", def:90, label:"ボスHPのステージごとの増加分", note:"" },
+  { key:"bossDist",     def:440,  label:"ボスが出るまでの距離(m)", note:"" },
+  { key:"speedBase",    def:48,   label:"スクロール速度(初期)", note:"速度 = この値 + 進行距離×係数(上限あり)" },
+  { key:"speedFactor",  def:0.16, label:"スクロール速度の係数", note:"" },
+  { key:"speedCap",     def:96,   label:"スクロール速度の上限", note:"" }
+];
 const KEY = "lb_weapon_cfg";
 
 function load(){
@@ -94,14 +125,30 @@ const saved = load();
 buildRows(document.getElementById("rangedT"), DEF_RANGED, saved, "ranged");
 buildRows(document.getElementById("meleeT"), DEF_MELEE, saved, "melee");
 
+// 難易度の行を作る
+const diffT = document.getElementById("diffT");
+DEF_DIFF.forEach(d => {
+  const sv = saved && saved.diff && isFinite(+saved.diff[d.key]) ? +saved.diff[d.key] : d.def;
+  const tr = document.createElement("tr");
+  tr.innerHTML =
+    '<td class="name">' + d.label +
+      (d.note ? '<br><span class="weakest">' + d.note + '</span>' : '') + '</td>' +
+    '<td><input type="number" step="0.01" min="0" id="diff_' + d.key + '" value="' + sv + '"></td>';
+  diffT.appendChild(tr);
+});
+
 document.getElementById("save").onclick = () => {
-  const cfg = { ranged: [], melee: [] };
+  const cfg = { ranged: [], melee: [], diff: {} };
   DEF_RANGED.forEach((d, i) => cfg.ranged.push({
     dmg: +document.getElementById("ranged_dmg_" + i).value || d.dmg,
     rate: +document.getElementById("ranged_rate_" + i).value || d.rate }));
   DEF_MELEE.forEach((d, i) => cfg.melee.push({
     dmg: +document.getElementById("melee_dmg_" + i).value || d.dmg,
     rate: +document.getElementById("melee_rate_" + i).value || d.rate }));
+  DEF_DIFF.forEach(d => {
+    const v = +document.getElementById("diff_" + d.key).value;
+    cfg.diff[d.key] = isFinite(v) && v >= 0 ? v : d.def;
+  });
   try {
     localStorage.setItem(KEY, JSON.stringify(cfg));
     document.getElementById("msg").textContent = "保存しました! ゲームを開き直す(リロードする)と反映されます。";
