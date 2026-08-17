@@ -444,8 +444,8 @@ function updateRaiders(dt){
       const px2 = tgt.x + Math.cos(ang) * rr2;
       const py2 = tgt.y + Math.sin(ang) * rr2;
       const dx = px2 - rd.x, dy2 = py2 - rd.y, dl = Math.hypot(dx, dy2) || 1;
-      if (dl > 5){                                // 持ち場へ直進
-        const sp = Math.min(135, dl / dt);
+      if (dl > 5){                                // 持ち場へ直進(全員同じ速度でゆっくり)
+        const sp = Math.min(65, dl / dt);
         rd.x += dx / dl * sp * dt;
         rd.y += dy2 / dl * sp * dt;
       }
@@ -474,11 +474,13 @@ function updateRaiders(dt){
         }
       }
     } else {
-      // 敵がいない間は隊列の少し前に整列して待機
+      // 敵がいない間は隊列の少し前に整列して待機(こちらも同じ速度で移動)
       const hx = player.x + ((ri % 5) - 2) * 24;
       const hy = player.y - 170 - Math.floor(ri / 5) * 24;
-      rd.x += (hx - rd.x) * dt * 2.5;
-      rd.y += (hy - rd.y) * dt * 2.5;
+      const dxh = hx - rd.x, dyh = hy - rd.y, dlh = Math.hypot(dxh, dyh) || 1;
+      const sph = Math.min(65, dlh / dt);
+      rd.x += dxh / dlh * sph * dt;
+      rd.y += dyh / dlh * sph * dt;
     }
     // 生きている間は敵より上(奥)へは行かない
     if (tgt && rd.y < tgt.y + 6) rd.y = tgt.y + 6;
@@ -837,9 +839,19 @@ function update(dt){
       const dxc = player.x - en.x, dyc = player.y - en.y;
       const dl = Math.hypot(dxc, dyc) || 1;
       const charge = DIFF.chargeBase + (stage - 1) * DIFF.chargePerStage;   // 突進速度(ステージで加速)
-      en.x += (dxc / dl) * charge * 0.7 * dt;
+      // ノシノシと踏みしめるリズムで迫ってくる
+      const stomp = 0.45 + 0.55 * Math.abs(Math.sin(en.wob * 1.2));
+      en.x += (dxc / dl) * charge * 0.7 * stomp * dt;
       // 下に迫ってくるスピードは3割遅め
-      en.y += (dy * 0.9 + Math.max(0, dyc / dl) * charge * dt) * 0.7;
+      en.y += (dy * 0.9 + Math.max(0, dyc / dl) * charge * stomp * dt) * 0.7;
+      // レーン(宝箱の行)を追い越して先に襲ってこない: レーンが通り過ぎるまで奥で待つ
+      let blockY = Infinity;
+      for (const g of gates){
+        if (g.y < player.y - 60 && g.y > en.y - 24 && g.slots.some(s => s && !s.used)){
+          blockY = Math.min(blockY, g.y);
+        }
+      }
+      if (blockY < Infinity && en.y > blockY - 48) en.y = blockY - 48;
       // 攻撃タイプごとの間合いで止まる(毒吐きは少し離れた所から吐く)
       const reach = en.atype === "poison" ? er * 0.5 + 95 : er * 0.5 + 22;
       const stopY = player.y - reach;
@@ -1083,6 +1095,7 @@ function updateBoss(dt){
     stage++;
     stageStartM = meters;
     stageBannerT = 2.2;
+    spawnKind = 0;                           // 新ステージは必ずレーンから出現する
     player.count = 1;                        // 次のステージも幹部1人(拳銃)から
     player.peak = 1; player.inv = 0;
     player.weapons = []; player.melee = []; raiders = [];
@@ -1702,7 +1715,7 @@ function drawEnemy(en){
   }
   if (en.y - r < 0) ctx.globalAlpha = 0.55;      // 完全に画面に入るまでは半透明(無敵)
   for (let i = 0; i < shown; i++){
-    const a = i * 2.39996 + en.wob * 0.15;         // 黄金角で散らす
+    const a = i * 2.39996;                         // 黄金角で散らす(回転しない=ぐるぐりを防ぐ)
     const rr = (4 + Math.sqrt(i) * 7) * 1.35;
     const ex = en.x + Math.cos(a) * rr * 0.9;
     const ey = en.y + Math.sin(a) * rr * 0.55 + Math.sin(en.wob + i) * 1.5;
