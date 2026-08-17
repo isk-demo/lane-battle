@@ -71,6 +71,31 @@ const WEAPONS = [
   { name:"火炎放射",     short:"火炎", rate:0.06, dmg:1, bspd:340, color:"#ff9c3c", stream:true, range:200 },
   { name:"毒ガス",       short:"毒ガス", rate:0.09, dmg:1, bspd:290, color:"#8fe85c", stream:true, range:235 }
 ];
+// 特攻部隊の近距離武器(0=素手が最弱)
+const MELEE = [
+  { name:"素手",       dmg:1, rate:0.9 },
+  { name:"棍棒",       dmg:2, rate:0.85 },
+  { name:"ナイフ",     dmg:3, rate:0.55 },
+  { name:"チェンソー", dmg:7, rate:0.45 }
+];
+// 武器の強さ設定を読み込む(weapon_config.html で編集して保存すると、同じサイトのゲームに反映される)
+try {
+  const cfg = JSON.parse(localStorage.getItem("lb_weapon_cfg") || "null");
+  if (cfg){
+    if (Array.isArray(cfg.ranged)) cfg.ranged.forEach((c, i) => {
+      if (WEAPONS[i] && c){
+        if (c.dmg > 0) WEAPONS[i].dmg = +c.dmg;
+        if (c.rate > 0) WEAPONS[i].rate = +c.rate;
+      }
+    });
+    if (Array.isArray(cfg.melee)) cfg.melee.forEach((c, i) => {
+      if (MELEE[i] && c){
+        if (c.dmg > 0) MELEE[i].dmg = +c.dmg;
+        if (c.rate > 0) MELEE[i].rate = +c.rate;
+      }
+    });
+  }
+} catch (e) { /* localStorageが使えない環境ではデフォルト値で動く */ }
 
 // ステージごとに世界観がガラッと変わる背景テーマ
 const THEMES = [
@@ -99,18 +124,29 @@ let best = 0;
 let player, bullets, gates, enemies, parts, meters, speed, spawnDist, shootT, shake, flash, killCount;
 let bosses, bossFight, bossWarnT, nextBossAt, floats, bossShots, slashes, waves;
 let stage, stageStartM, stageBannerT;
-let chainN, chainLane, gateRowsThisStage, captives, blasts, corpses;
-// 武器を持っている(射撃できる)兵士の数。残りは素手でパンチ
+let chainN, chainLane, gateRowsThisStage, captives, blasts, corpses, raiders;
+// 武器を持っている味方の数(幹部は全員拳銃以上を装備。特攻は近接武器を持つ者のみ)
 function armedCount(){
-  let t = 0;
-  for (const st of player.weapons) t += st.n;
-  return Math.min(t, player.count);
+  let m = 0;
+  for (const st of (player.melee || [])) m += st.n;
+  return player.count + Math.min(m, raiders ? raiders.length : 0);
+}
+// i番目の特攻隊員が持つ近接武器(近接武器の在庫を先頭から順に割り当て。無ければ素手=0)
+function raiderMid(i){
+  let acc = 0;
+  for (const st of (player.melee || [])){
+    acc += st.n;
+    if (i < acc) return st.mid;
+  }
+  return 0;
 }
 let resumeStage = 1;                         // ゲームオーバーになったステージから再開する
 
 function reset(){
-  player  = { x: W/2, y: 570, count: 1, weapons: [{ wid: 0, n: 1, t: 0 }], peak: 1, inv: 0 };
-  captives = [];                             // 捕虜として連れ去られる兵士の演出
+  // count = 幹部の人数(全員デフォルトで拳銃持ち)。特攻部隊は raiders に入る
+  player  = { x: W/2, y: 570, count: 1, weapons: [], melee: [], peak: 1, inv: 0 };
+  raiders = [];                              // 特攻部隊(前線に突撃して直接攻撃する)
+  captives = [];                             // (旧演出用・未使用)
   blasts = [];                               // 手榴弾の爆発範囲エフェクト
   corpses = [];                              // 倒れた敵と血だまり
   chainN = 0; chainLane = 0; gateRowsThisStage = 0;
@@ -293,11 +329,14 @@ function randWpn(){
   return 10;                                 // 毒ガス
 }
 function makeGatePair(){
-  // マイナスの宝箱は無し。人(プラス)と武器の2種類だけ
+  // 人(幹部/特攻)と武器(銃/近接)の宝箱。幹部と特攻はバランスよく出る
   function one(){
-    if (Math.random() < 0.5) return { op:"add", val: gateVal(), gain: gateGain(), used:false, hits:0 };
+    const r = Math.random();
+    if (r < 0.25) return { op:"add", kind:"officer", val: gateVal(), gain: gateGain(), used:false, hits:0 };
+    if (r < 0.50) return { op:"add", kind:"assault", val: gateVal(), gain: gateGain(), used:false, hits:0 };
     // もらえる武器の数は1〜5で固定(撃っても増えない)
-    return { op:"wpn", wid: randWpn(), val: gateVal(), wn: 1 + Math.floor(Math.random() * 5), used:false, hits:0 };
+    if (r < 0.83) return { op:"wpn", wid: randWpn(), val: gateVal(), wn: 1 + Math.floor(Math.random() * 5), used:false, hits:0 };
+    return { op:"mwpn", mid: 1 + Math.floor(Math.random() * 3), val: gateVal(), wn: 1 + Math.floor(Math.random() * 5), used:false, hits:0 };
   }
   // 3枠それぞれに「ある/ない」のランダム性を持たせる
   const slots = [];
@@ -306,8 +345,9 @@ function makeGatePair(){
   // 武器は1行に1つまで
   let seenW = false;
   for (let i = 0; i < LANES; i++){
-    if (slots[i] && slots[i].op === "wpn"){
-      if (seenW) slots[i] = { op:"add", val: gateVal(), gain: gateGain(), used:false, hits:0 };
+    if (slots[i] && (slots[i].op === "wpn" || slots[i].op === "mwpn")){
+      if (seenW) slots[i] = { op:"add", kind: Math.random() < 0.5 ? "officer" : "assault",
+        val: gateVal(), gain: gateGain(), used:false, hits:0 };
       seenW = true;
     }
   }
@@ -328,6 +368,68 @@ function makeEnemy(forceMid){
   enemies.push({ x, y: -50, count: n, wob: Math.random()*6.28,
     atkT: 0.4 + Math.random() * 0.5, atype, swingT: 0,
     hpPer: mid ? 3 : 1, hpBuf: 0, maxHp: n * (mid ? 3 : 1) });
+}
+// 特攻部隊: 隊列にとどまらず前線へ突撃し、敵に直接攻撃を仕掛ける
+function spawnRaider(){
+  if (raiders.length >= 60) return;
+  raiders.push({ x: player.x + (Math.random() - 0.5) * 70,
+    y: player.y - 40 - Math.random() * 30,
+    wob: Math.random() * 6.28, atkT: 0.3, dead: false });
+}
+function updateRaiders(dt){
+  for (let ri = 0; ri < raiders.length; ri++){
+    const rd = raiders[ri];
+    rd.wob += dt * 5;
+    // 一番近い敵かボスを狙う(完全に画面に入っている相手だけ)
+    let tgt = null, td = 1e9;
+    for (const en of enemies){
+      if (en.count <= 0) continue;
+      const er2 = enemyRadius(en);
+      if (en.y - er2 < 0) continue;
+      const d = Math.hypot(en.x - rd.x, en.y - rd.y);
+      if (d < td){ td = d; tgt = { x: en.x, y: en.y, en, r: er2 }; }
+    }
+    for (const bb of bosses){
+      if (bb.y - bb.r < 0) continue;
+      const d = Math.hypot(bb.x - rd.x, bb.y - rd.y);
+      if (d < td){ td = d; tgt = { x: bb.x, y: bb.y, boss: bb, r: bb.r }; }
+    }
+    if (tgt){
+      const dx = tgt.x - rd.x, dy2 = tgt.y - rd.y, dl = Math.hypot(dx, dy2) || 1;
+      if (dl > tgt.r + 16){                       // 突撃!
+        rd.x += dx / dl * 125 * dt;
+        rd.y += dy2 / dl * 125 * dt;
+      } else {                                    // 直接攻撃
+        rd.atkT -= dt;
+        if (rd.atkT <= 0){
+          const mw = MELEE[raiderMid(ri)];
+          rd.atkT = mw.rate;
+          addSlash(rd.x + (dx / dl) * 10, rd.y + (dy2 / dl) * 10 - 6);
+          burst(tgt.x - (dx / dl) * tgt.r * 0.5, tgt.y - (dy2 / dl) * tgt.r * 0.5, "#ffd9a8", 4);
+          if (tgt.en){
+            const en = tgt.en;
+            en.hpBuf = (en.hpBuf || 0) + mw.dmg;
+            let mk = 0;
+            while (en.hpBuf >= (en.hpPer || 1) && en.count > 0){
+              en.hpBuf -= (en.hpPer || 1);
+              en.count--; killCount++; mk++;
+            }
+            if (mk > 0) dropCorpses(en, mk);
+          } else {
+            tgt.boss.hp -= mw.dmg;
+          }
+        }
+      }
+    } else {
+      // 敵がいない間は隊列の少し前(中間地点)で待機
+      const hx = player.x + Math.sin(rd.wob) * 26, hy = player.y - 170;
+      rd.x += (hx - rd.x) * dt * 2.2;
+      rd.y += (hy - rd.y) * dt * 2.2;
+    }
+    rd.x = Math.max(ROAD_L + 12, Math.min(ROAD_R - 12, rd.x));
+    rd.y = Math.max(60, Math.min(H - 40, rd.y));
+  }
+  raiders = raiders.filter(r => !r.dead);
 }
 // 毒ブレス: 口から短い毒の息を吐く(近距離のみ、遠くへは飛ばない)
 function breathAttack(x, y, dmg){
@@ -490,7 +592,7 @@ function update(dt){
 
   player.inv = Math.max(0, player.inv - dt);     // 被弾後の無敵時間を減らす
   player.peak = Math.max(player.peak || 1, player.count);   // 体力ゲージ用の最大人数
-  // 兵士が捕虜になると武器も失われる(武器の総数 ≦ 人数)。古い武器から失う
+  // 幹部が倒れると特殊武器も失われる(特殊武器の総数 ≦ 幹部数)。古い武器から失う
   let totW = 0;
   for (const st of player.weapons) totW += st.n;
   let excessW = totW - Math.max(player.count, 0);
@@ -500,6 +602,16 @@ function update(dt){
     st0.n -= d0; excessW -= d0;
     if (st0.n <= 0) player.weapons.shift();
   }
+  // 特攻隊員が倒れると近接武器も失われる(近接武器の総数 ≦ 特攻の人数)
+  let totM = 0;
+  for (const st of player.melee) totM += st.n;
+  let excessM = totM - raiders.length;
+  while (excessM > 0 && player.melee.length){
+    const sm = player.melee[0];
+    const dM = Math.min(sm.n, excessM);
+    sm.n -= dM; excessM -= dM;
+    if (sm.n <= 0) player.melee.shift();
+  }
   // 倒れた敵は道と一緒に流れて消える
   for (const c of corpses){ c.y += dy; c.t -= dt; }
   corpses = corpses.filter(c => c.t > 0 && c.y < H + 40);
@@ -507,13 +619,29 @@ function update(dt){
   spawnStep(dy);
   updateBoss(dt);
   updateWaves(dt);
+  updateRaiders(dt);
 
-  // 射撃: 武器を持つ兵士だけが撃てる(武器の種類ごとの連射速度)。
-  // 弾はその武器を構えている兵士(隊列の後方)の位置から出る
+  // 射撃: 幹部は全員が射撃する。デフォルトは拳銃、手に入れた銃は後方の幹部が持ち替える
   const fAll = formationData(player.count);
-  const walkersN = player.count - armedCount();
-  let slotsLeft = player.count;
-  let armIdx = 0;                                         // 武装兵の通し番号
+  let specialTotal = 0;
+  for (const st of player.weapons) specialTotal += st.n;
+  specialTotal = Math.min(specialTotal, player.count);
+  const pistolN = player.count - specialTotal;
+  // 拳銃部隊(前方の幹部)
+  shootT -= dt;
+  if (shootT <= 0){
+    const pw = WEAPONS[0];
+    shootT = pw.rate;
+    const emitP = Math.min(pistolN, 24);
+    for (let k = 0; k < emitP; k++){
+      const p = fAll.pts[k];
+      bullets.push({ x: player.x + p.x, y: player.y + p.y * 0.8 - 12,
+        vx: 0, vy: -pw.bspd, dmg: pw.dmg, wi: 0, pierce: 0 });
+    }
+  }
+  // 特殊武器部隊(後方の幹部)
+  let slotsLeft = specialTotal;
+  let armIdx = 0;                                         // 特殊武器持ちの通し番号
   for (const st of player.weapons){
     const shooters = Math.min(st.n, slotsLeft);
     slotsLeft -= shooters;
@@ -527,7 +655,7 @@ function update(dt){
     const emit = Math.min(shooters, w.spread ? 8 : 24);   // 同時発射数の上限
     let mp = null;
     for (let k = 0; k < emit; k++){
-      const p = fAll.pts[Math.min(walkersN + myBase + k, fAll.pts.length - 1)];
+      const p = fAll.pts[Math.min(pistolN + myBase + k, fAll.pts.length - 1)];
       const fx0 = player.x + p.x + (w.jitter ? (Math.random() - 0.5) * 6 : 0);
       const fy0 = player.y + p.y * 0.8 - 14;
       if (!mp) mp = { x: fx0, y: fy0 };
@@ -604,16 +732,28 @@ function update(dt){
         side.used = true;
         const ccx = ROAD_L + (lane + 0.5) * laneW();
         if (side.op === "wpn"){
-          // たまった本数分の武器を回収して、素手の兵士から順に装備
+          // 銃器: 幹部が拳銃から持ち替える
           player.weapons.push({ wid: side.wid, n: Math.max(1, side.wn || 1), t: 0 });
           if (player.weapons.length > 6) player.weapons.shift();
           floats.push({ x: player.x, y: player.y - 70,
             text: WEAPONS[side.wid].name + "×" + side.wn + " 回収!", color: "#ffd76b", t: 1.4 });
           burst(ccx, g.y - 20, "#ffd76b", 18);
+        } else if (side.op === "mwpn"){
+          // 近接武器: 特攻部隊が装備する
+          player.melee.push({ mid: side.mid, n: Math.max(1, side.wn || 1) });
+          if (player.melee.length > 6) player.melee.shift();
+          floats.push({ x: player.x, y: player.y - 70,
+            text: MELEE[side.mid].name + "×" + side.wn + " 回収!(特攻用)", color: "#c8d2e4", t: 1.4 });
+          burst(ccx, g.y - 20, "#c8d2e4", 18);
+        } else if (side.kind === "assault"){
+          for (let q = 0; q < side.gain; q++) spawnRaider();
+          floats.push({ x: player.x, y: player.y - 55,
+            text: "特攻部隊 +" + side.gain + "人!", color: "#ff9c7a", t: 1.3 });
+          burst(ccx, g.y - 20, "#ff9c7a", 18);
         } else {
           player.count = Math.min(player.count + side.gain, 999);
           floats.push({ x: player.x, y: player.y - 55,
-            text: "+" + side.gain + "人救出!", color: "#5df08d", t: 1.3 });
+            text: "幹部 +" + side.gain + "人!", color: "#5df08d", t: 1.3 });
           burst(ccx, g.y - 20, "#5df08d", 18);
         }
         // 同じ行の他の宝箱はそのまま残る(続けて撃ち切れば全部取れる)
@@ -663,22 +803,26 @@ function update(dt){
             shake = Math.max(shake, 0.2);
           }
         }
-        // 素手の兵士は接近してきた敵をパンチで反撃
-        const unarmed = player.count - armedCount();
-        if (unarmed > 0 && en.atype !== "poison"){
-          en.punchT = (en.punchT === undefined ? 0.5 : en.punchT) - dt;
-          if (en.punchT <= 0){
-            en.punchT = 0.7;
-            en.hpBuf = (en.hpBuf || 0) + Math.min(unarmed, 25);
-            let pk = 0;
-            while (en.hpBuf >= (en.hpPer || 1) && en.count > 0){
-              en.hpBuf -= (en.hpPer || 1);
-              en.count--; killCount++; pk++;
+      }
+      // 接触している特攻隊員がいれば、そちらを攻撃して倒す
+      if (en.y - er > 0){
+        en.rAtkT = (en.rAtkT === undefined ? 0.7 : en.rAtkT) - dt;
+        if (en.rAtkT <= 0){
+          let hitR = false;
+          for (const rd of raiders){
+            if (rd.dead) continue;
+            if (Math.hypot(rd.x - en.x, rd.y - en.y) < er + 18){
+              en.rAtkT = 1.0;
+              rd.dead = true;
+              hitR = true;
+              addSlash(rd.x, rd.y - 8);
+              burst(rd.x, rd.y, "#ff6b6b", 8);
+              if (corpses.length > 45) corpses.shift();
+              corpses.push({ x: rd.x, y: rd.y, rot: (Math.random() - 0.5) * 0.7, t: 2.6, ally: true });
+              break;
             }
-            if (pk > 0) dropCorpses(en, pk);
-            burst(en.x, en.y + er * 0.5, "#ffd9a8", 6);
-            addSlash(en.x, en.y + er * 0.4);
           }
+          if (!hitR) en.rAtkT = 0.2;             // 相手がいなければすぐ次のチェック
         }
       }
     }
@@ -881,9 +1025,9 @@ function updateBoss(dt){
     stage++;
     stageStartM = meters;
     stageBannerT = 2.2;
-    player.count = 1;                        // 次のステージも1人から(拳銃1丁持ち)
+    player.count = 1;                        // 次のステージも幹部1人(拳銃)から
     player.peak = 1; player.inv = 0;
-    player.weapons = [{ wid: 0, n: 1, t: 0 }];
+    player.weapons = []; player.melee = []; raiders = [];
     gates = []; enemies = []; bullets = []; bossShots = []; waves = []; corpses = [];
     spawnDist = 30;                          // 新ステージ開始3秒以内にレーンが出る
     gateRowsThisStage = 0;                   // 新ステージ最初の行はプラスから
@@ -1024,6 +1168,9 @@ function draw(dt){
 
   // 敵
   for (const en of enemies) drawEnemy(en);
+
+  // 特攻部隊(前線で戦う味方)
+  for (let ri = 0; ri < raiders.length; ri++) drawRaider(raiders[ri], raiderMid(ri));
 
   // ボス(複数対応)
   for (const bb of bosses) drawBoss(bb);
@@ -1169,13 +1316,17 @@ function draw(dt){
   ctx.fillStyle = "#9cc4ff";
   ctx.font = "bold 13px -apple-system, sans-serif";
   {
-    const ac = armedCount(), ua = Math.max(0, player.count - ac);
-    ctx.fillText("🔫 武装 " + ac + "人 / 👊 素手 " + ua + "人", 14, 34);
+    ctx.fillText("🎖 幹部 " + player.count + "人 / 🔥 特攻 " + raiders.length + "人", 14, 34);
     ctx.font = "12px -apple-system, sans-serif";
     ctx.fillStyle = "rgba(255,215,107,0.85)";
     const list = player.weapons.map(st => (WEAPONS[st.wid].short || WEAPONS[st.wid].name) + "×" + st.n);
-    ctx.fillText(list.slice(0, 4).join(" "), 14, 52);
-    if (list.length > 4) ctx.fillText(list.slice(4).join(" "), 14, 68);
+    ctx.fillText(("拳銃×" + Math.max(0, player.count - player.weapons.reduce((a, s) => a + s.n, 0)) + " " +
+      list.join(" ")).trim(), 14, 52);
+    const mlist = player.melee.map(st => MELEE[st.mid].name + "×" + st.n);
+    if (mlist.length){
+      ctx.fillStyle = "rgba(200,210,228,0.85)";
+      ctx.fillText("特攻: " + mlist.join(" "), 14, 68);
+    }
   }
   ctx.textAlign = "right";
   ctx.fillStyle = "#ffd76b";
@@ -1288,6 +1439,24 @@ function drawGate(g){
       const fs = label.length >= 4 ? 15 : 18;
       ctx.font = "bold " + Math.round(fs + fl * 8) + "px -apple-system, sans-serif";
       ctx.fillText(label, cx, g.y - 66);                         // 残り射撃回数
+    } else if (s.op === "mwpn"){
+      // 近接武器の宝箱(鋼鉄の箱): 特攻部隊が装備する
+      drawChest(cx, g.y, "#4a4f5c", "#5a6070", "#c8d2e4", "rgba(160,180,220,0.14)");
+      ctx.save();
+      ctx.translate(cx - 6, g.y - 46);
+      drawMeleeIcon(s.mid, 0, 0);
+      ctx.restore();
+      ctx.fillStyle = "#e4ecf8";
+      ctx.font = "bold 13px -apple-system, sans-serif";
+      ctx.fillText("×" + (s.wn || 1), cx + 15, g.y - 42);        // もらえる本数
+      ctx.fillStyle = "#c8d2e4";
+      ctx.font = "bold 11px -apple-system, sans-serif";
+      ctx.fillText(MELEE[s.mid].name + "(特攻)", cx, g.y - 2);
+      const label = gateLabel(s);
+      ctx.fillStyle = "#e4ecf8";
+      const fs = label.length >= 4 ? 15 : 18;
+      ctx.font = "bold " + Math.round(fs + fl * 8) + "px -apple-system, sans-serif";
+      ctx.fillText(label, cx, g.y - 66);                         // 残り射撃回数
     } else if (s.chain){
       // 緑の連続パネル: 通過で+1
       drawChest(cx, g.y, "#1f6b42", "#2a8252", "#7ff0b2", "rgba(60,220,140,0.16)");
@@ -1296,10 +1465,15 @@ function drawGate(g){
       ctx.fillText(gateLabel(s), cx + 7, g.y - 48);
       drawPersonIcon(cx - 7 - ctx.measureText(gateLabel(s)).width / 2 - 8, g.y - 54, "#a9f5ce");
     } else {
-      // 人の宝箱: 数字(必要射撃回数)を撃ち切ると、檻に捕らわれた仲間を救出できる
-      drawChest(cx, g.y, "#2c4f8a", "#376099", "#8fc1ff", "rgba(80,150,255,0.15)");
+      // 人の宝箱: 撃ち切ると檻の仲間を救出。青=幹部 / 赤=特攻部隊
+      const assault = s.kind === "assault";
+      if (assault) drawChest(cx, g.y, "#8a4a2c", "#9c5836", "#ffb08a", "rgba(255,140,90,0.15)");
+      else         drawChest(cx, g.y, "#2c4f8a", "#376099", "#8fc1ff", "rgba(80,150,255,0.15)");
+      ctx.fillStyle = assault ? "#ffb08a" : "#8fc1ff";
+      ctx.font = "bold 11px -apple-system, sans-serif";
+      ctx.fillText(assault ? "特攻部隊" : "幹部", cx, g.y - 2);
       const label = gateLabel(s);
-      ctx.fillStyle = "#8fc1ff";
+      ctx.fillStyle = assault ? "#ffb08a" : "#8fc1ff";
       const fs = label.length >= 5 ? 15 : label.length >= 4 ? 17 : 20;
       ctx.font = "bold " + Math.round(fs + fl * 10) + "px -apple-system, sans-serif";  // 数字がポンと跳ねる
       ctx.fillText(label, cx, g.y - 48);                         // 必要射撃回数
@@ -1309,7 +1483,7 @@ function drawGate(g){
       ctx.fillStyle = "rgba(16,22,36,0.7)";                      // 檻の中の暗がり
       roundRect(cx - cw/2, g.y - 85, cw, 24, 4);
       for (let k = 0; k < gn; k++)
-        drawPersonIcon(cx - (gn - 1) * 6.5 + k * 13, g.y - 73, "#ffd9a8");
+        drawPersonIcon(cx - (gn - 1) * 6.5 + k * 13, g.y - 73, assault ? "#ffb08a" : "#a9d4ff");
       ctx.strokeStyle = "#9aa4b8"; ctx.lineWidth = 1.5;          // 檻の格子
       const bars = Math.max(3, gn + 1);
       for (let k = 1; k < bars; k++){
@@ -1743,11 +1917,10 @@ function drawSquad(){
   beginPersp(player.x, player.y);
   // 被弾後の無敵時間中は点滅する
   if (player.inv > 0 && Math.floor(player.inv * 12) % 2 === 0) ctx.globalAlpha = 0.45;
-  // 全員を1つの隊列で描く(左上の人数と表示される人数は必ず一致する)
-  // 前方=素手の兵士、後方=武器持ちの兵士(武器ごとの見た目で並ぶ)
+  // 幹部を1つの隊列で描く(左上の幹部数と表示される人数は必ず一致する)
+  // 前方=拳銃の幹部、後方=特殊武器に持ち替えた幹部
   const f = formationData(player.count);
-  const walkers = Math.max(0, player.count - armedCount());
-  const wids = [];                                 // 武装兵に持たせる武器の並び
+  const wids = [];                                 // 特殊武器の並び
   {
     let left = player.count;
     for (const st of player.weapons){
@@ -1756,13 +1929,14 @@ function drawSquad(){
       left -= k2;
     }
   }
+  const pistolN = player.count - wids.length;
   for (let i = 0; i < f.pts.length; i++){
     const p = f.pts[i];
     const sx = player.x + p.x, sy = player.y + p.y * 0.8;
-    if (i < walkers){
-      drawSoldier(sx, sy);                         // 素手
+    if (i < pistolN){
+      drawSoldier(sx, sy, 0);                      // デフォルトの拳銃
     } else {
-      const wid = wids[i - walkers];
+      const wid = wids[i - pistolN];
       if (wid === 7) drawTankRide(sx, sy);         // 戦車は大きく描いて兵士が乗る
       else drawSoldier(sx, sy, wid);
     }
@@ -1776,6 +1950,86 @@ function drawSquad(){
   ctx.fillStyle = "#5df08d";
   ctx.fillRect(player.x - 20, player.y - 34, 40 * Math.min(1, player.count / peak), 4.5);
   ctx.restore();                                 // 遠近変換おわり
+}
+// 特攻部隊の近接武器アイコン(棍棒・ナイフ・チェンソー)
+function drawMeleeIcon(mid, x, y){
+  ctx.save();
+  ctx.translate(x, y);
+  if (mid === 1){            // 棍棒
+    ctx.rotate(-0.5);
+    ctx.fillStyle = "#8a5a2b";
+    roundRect(-3, -14, 6, 20, 3);
+    ctx.fillStyle = "#6e4620";
+    roundRect(-4.8, -17, 9.6, 8, 4);                             // 太い先端
+    ctx.fillStyle = "#a8763c";
+    ctx.fillRect(-3, 3, 6, 2);                                   // グリップ
+  } else if (mid === 2){     // ナイフ
+    ctx.rotate(-0.4);
+    ctx.fillStyle = "#5a4326"; ctx.fillRect(-2, 2, 4, 9);        // 柄
+    ctx.fillStyle = "#8a5a2b"; ctx.fillRect(-5.5, 0, 11, 3);     // 鍔
+    ctx.fillStyle = "#dfe6f2";
+    ctx.beginPath(); ctx.moveTo(-3, 0); ctx.lineTo(0, -17); ctx.lineTo(3, 0); ctx.closePath(); ctx.fill();  // 刃
+    ctx.fillStyle = "#b8c2d4";
+    ctx.beginPath(); ctx.moveTo(0, -17); ctx.lineTo(3, 0); ctx.lineTo(1, 0); ctx.closePath(); ctx.fill();
+  } else if (mid === 3){     // チェンソー
+    ctx.fillStyle = "#e07820";
+    roundRect(-9, -3, 13, 9, 2);                                 // エンジン部
+    ctx.fillStyle = "#8a8f9c";
+    roundRect(1, -6, 17, 7, 3.5);                                // ガイドバー
+    ctx.strokeStyle = "#3c414c"; ctx.lineWidth = 1.8;            // チェーン
+    ctx.beginPath(); ctx.moveTo(2, -6.5); ctx.lineTo(17, -6.5); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(2, 1.5); ctx.lineTo(17, 1.5); ctx.stroke();
+    ctx.fillStyle = "#3c414c";
+    roundRect(-8, -8, 5, 5, 2);                                  // ハンドル
+  }
+  ctx.restore();
+}
+// 特攻隊員(赤いベレーで前線に突撃する)。近接武器を構える
+function drawRaider(rd, mid){
+  beginPersp(rd.x, rd.y);
+  {                                                // 近づくほど大きく(遠近感)
+    const dk = depthK(rd.y);
+    ctx.translate(rd.x, rd.y);
+    ctx.scale(dk, dk);
+    ctx.translate(-rd.x, -rd.y);
+  }
+  ctx.save();
+  ctx.translate(rd.x, rd.y + Math.sin(rd.wob) * 1.5);
+  ctx.scale(1.5, 1.5);
+  ctx.fillStyle = "#2c3320";                               // 軍パンツ
+  ctx.fillRect(-3.2, 2, 2.6, 5.4);
+  ctx.fillRect(0.6, 2, 2.6, 5.4);
+  ctx.fillStyle = "#5c4a3a";                               // 特攻スタイルの上衣
+  roundRect(-4, -4, 8, 7, 2);
+  ctx.fillStyle = "#3d3126";
+  ctx.fillRect(-2.4, -3.4, 4.8, 6);
+  ctx.fillStyle = "#d8b48c";                               // 顔
+  ctx.beginPath(); ctx.arc(0, -8, 3.6, 0, 6.283); ctx.fill();
+  ctx.fillStyle = "#1a2014";
+  ctx.fillRect(-2.3, -8.4, 1.6, 1.2);
+  ctx.fillRect(0.7, -8.4, 1.6, 1.2);
+  ctx.fillStyle = "#a83232";                               // 赤いベレー帽
+  ctx.beginPath(); ctx.arc(0, -9.2, 3.9, Math.PI, 0); ctx.fill();
+  ctx.fillRect(-4, -9.6, 8, 1.5);
+  // 一人ひとりの体力ゲージ
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(-4.6, -15.2, 9.2, 2.4);
+  ctx.fillStyle = "#5df08d";
+  ctx.fillRect(-4.1, -14.7, 8.2, 1.4);
+  // 近接武器(無ければ素手)
+  if (mid > 0){
+    ctx.save();
+    ctx.translate(4.5, -4);
+    ctx.scale(0.5, 0.5);
+    drawMeleeIcon(mid, 0, 0);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = "#d8b48c";
+    ctx.beginPath(); ctx.arc(4.4, -4.4, 1.9, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(-4.4, -3.0, 1.9, 0, 6.283); ctx.fill();
+  }
+  ctx.restore();
+  ctx.restore();                                   // 遠近変換おわり
 }
 // 戦車(人の約2倍サイズ)に一般兵が乗っている
 function drawTankRide(x, y){

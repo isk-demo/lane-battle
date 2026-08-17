@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LANE BATTLE 武器強さ設定</title>
+<style>
+  body { font-family: -apple-system, "Hiragino Sans", sans-serif; background: #0b0f1c; color: #e8eef8;
+    margin: 0; padding: 24px 16px 60px; }
+  .wrap { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 22px; color: #ffd76b; margin: 0 0 4px; }
+  p.note { font-size: 12.5px; color: #9aa4b8; line-height: 1.7; margin: 6px 0 18px; }
+  h2 { font-size: 15px; color: #8fc1ff; border-bottom: 1px solid #2a3550; padding-bottom: 6px; margin: 26px 0 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { font-size: 11.5px; color: #9aa4b8; text-align: left; padding: 4px 6px; font-weight: normal; }
+  td { padding: 5px 6px; border-top: 1px solid #1c2438; font-size: 14px; }
+  td.name { width: 40%; }
+  input[type="number"] { width: 76px; background: #141b30; color: #e8eef8; border: 1px solid #2a3550;
+    border-radius: 8px; padding: 7px 8px; font-size: 15px; }
+  input[type="number"]:focus { outline: none; border-color: #ffd76b; }
+  .btns { position: sticky; bottom: 0; background: linear-gradient(transparent, #0b0f1c 30%);
+    padding: 18px 0 6px; display: flex; gap: 10px; margin-top: 24px; }
+  button { flex: 1; padding: 13px 0; font-size: 15px; font-weight: bold; border: none; border-radius: 12px; cursor: pointer; }
+  #save { background: #ffd76b; color: #201800; }
+  #resetBtn { background: #2a3550; color: #cfe4ff; }
+  #msg { text-align: center; font-size: 13px; color: #5df08d; height: 18px; margin-top: 8px; }
+  .weakest { color: #9aa4b8; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>⚙️ 武器強さ設定</h1>
+  <p class="note">
+    数字を変えて「保存」を押すと、<b>同じサイトで開いた LANE BATTLE</b>(次にゲームを開いた時/リロード時)に反映されます。<br>
+    ・<b>攻撃力</b> = 1発(1振り)あたりのダメージ<br>
+    ・<b>攻撃間隔(秒)</b> = 小さいほど速く連射・連撃できる<br>
+    ・最弱は「素手」です。素手より弱くしたい武器があれば攻撃力を下げてください。
+  </p>
+
+  <h2>🥊 近接武器(特攻部隊が使う)</h2>
+  <table id="meleeT">
+    <tr><th>武器</th><th>攻撃力</th><th>攻撃間隔(秒)</th></tr>
+  </table>
+
+  <h2>🔫 銃器(幹部が使う)</h2>
+  <table id="rangedT">
+    <tr><th>武器</th><th>攻撃力</th><th>攻撃間隔(秒)</th></tr>
+  </table>
+
+  <div class="btns">
+    <button id="save">保存してゲームに反映</button>
+    <button id="resetBtn">初期値に戻す</button>
+  </div>
+  <div id="msg"></div>
+</div>
+<script>
+// ゲーム本体と同じ初期値(ここは編集しなくてOK。画面で変更して保存してください)
+const DEF_RANGED = [
+  { name:"拳銃(幹部の初期装備)", dmg:1, rate:0.72 },
+  { name:"ライフル",     dmg:2,  rate:0.10 },
+  { name:"マシンガン",   dmg:1,  rate:0.055 },
+  { name:"ショットガン", dmg:1,  rate:0.20 },
+  { name:"大砲",         dmg:6,  rate:0.30 },
+  { name:"レーザー",     dmg:1,  rate:0.09 },
+  { name:"ロケットランチャー", dmg:10, rate:0.45 },
+  { name:"戦車",         dmg:7,  rate:0.35 },
+  { name:"手榴弾",       dmg:5,  rate:0.85 },
+  { name:"火炎放射",     dmg:1,  rate:0.06 },
+  { name:"毒ガス",       dmg:1,  rate:0.09 }
+];
+const DEF_MELEE = [
+  { name:"素手(最弱)",   dmg:1, rate:0.9 },
+  { name:"棍棒",         dmg:2, rate:0.85 },
+  { name:"ナイフ",       dmg:3, rate:0.55 },
+  { name:"チェンソー",   dmg:7, rate:0.45 }
+];
+const KEY = "lb_weapon_cfg";
+
+function load(){
+  try { return JSON.parse(localStorage.getItem(KEY) || "null"); } catch(e){ return null; }
+}
+function buildRows(tbl, defs, saved, kind){
+  defs.forEach((d, i) => {
+    const s = (saved && saved[kind] && saved[kind][i]) || {};
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td class="name">' + d.name + (kind === "melee" && i === 0 ? ' <span class="weakest"></span>' : '') + '</td>' +
+      '<td><input type="number" step="1" min="0" id="' + kind + '_dmg_' + i + '" value="' + (s.dmg > 0 ? s.dmg : d.dmg) + '"></td>' +
+      '<td><input type="number" step="0.01" min="0.02" id="' + kind + '_rate_' + i + '" value="' + (s.rate > 0 ? s.rate : d.rate) + '"></td>';
+    tbl.appendChild(tr);
+  });
+}
+const saved = load();
+buildRows(document.getElementById("rangedT"), DEF_RANGED, saved, "ranged");
+buildRows(document.getElementById("meleeT"), DEF_MELEE, saved, "melee");
+
+document.getElementById("save").onclick = () => {
+  const cfg = { ranged: [], melee: [] };
+  DEF_RANGED.forEach((d, i) => cfg.ranged.push({
+    dmg: +document.getElementById("ranged_dmg_" + i).value || d.dmg,
+    rate: +document.getElementById("ranged_rate_" + i).value || d.rate }));
+  DEF_MELEE.forEach((d, i) => cfg.melee.push({
+    dmg: +document.getElementById("melee_dmg_" + i).value || d.dmg,
+    rate: +document.getElementById("melee_rate_" + i).value || d.rate }));
+  try {
+    localStorage.setItem(KEY, JSON.stringify(cfg));
+    document.getElementById("msg").textContent = "保存しました! ゲームを開き直す(リロードする)と反映されます。";
+  } catch(e){
+    document.getElementById("msg").textContent = "この環境では保存できません(GitHub Pagesのサイト上で開いてください)";
+  }
+};
+document.getElementById("resetBtn").onclick = () => {
+  try { localStorage.removeItem(KEY); } catch(e){}
+  location.reload();
+};
+</script>
+</body>
+</html>
