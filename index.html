@@ -291,7 +291,7 @@ let _fCache = { n: -1 };
 function formationData(n){
   if (_fCache.n === n) return _fCache;
   // 6列隊形(半分サイズで中央寄りに密集)
-  const colX = [-11, 11, -33, 33, -55, 55];    // 中央寄りから埋まる
+  const colX = [-13, 13, -39, 39, -65, 65];    // 中央寄りから埋まる(幹部は大きめ表示)
   const pts = [];
   let i = 0, row = 0;
   while (i < n){
@@ -300,13 +300,13 @@ function formationData(n){
     for (let k = 0; k < inRow; k++) mean += colX[k];
     mean /= inRow;
     for (let k = 0; k < inRow; k++){
-      pts.push({ x: colX[k] - mean, y: row * 20 });
+      pts.push({ x: colX[k] - mean, y: row * 25 });
       i++;
     }
     row++;
   }
-  let half = 12, maxY = 0;
-  for (const p of pts){ half = Math.max(half, Math.abs(p.x) + 10); maxY = Math.max(maxY, p.y); }
+  let half = 14, maxY = 0;
+  for (const p of pts){ half = Math.max(half, Math.abs(p.x) + 12); maxY = Math.max(maxY, p.y); }
   _fCache = { n, s: 1, pts, half, maxY };
   return _fCache;
 }
@@ -385,6 +385,10 @@ function makeGatePair(){
       seenW = true;
     }
   }
+  // ステージ最初の3行は、最大3発でゲットできる軽い宝箱にする
+  if (gateRowsThisStage < 3){
+    for (const s of slots) if (s) s.val = 1 + Math.floor(Math.random() * 3);
+  }
   gateRowsThisStage++;
   gates.push({ y: -60, slots });
 }
@@ -411,35 +415,50 @@ function spawnRaider(){
     wob: Math.random() * 6.28, atkT: 0.3, dead: false });
 }
 function updateRaiders(dt){
+  if (raiders.length === 0) return;
+  // グループ全体で1つの標的を決めて、隊で襲いかかる
+  const gcx = raiders.reduce((a, r) => a + r.x, 0) / raiders.length;
+  const gcy = raiders.reduce((a, r) => a + r.y, 0) / raiders.length;
+  let tgt = null, td = 1e9;
+  for (const en of enemies){
+    if (en.count <= 0) continue;
+    const er2 = enemyRadius(en);
+    if (en.y - er2 < 0) continue;
+    const d = Math.hypot(en.x - gcx, en.y - gcy);
+    if (d < td){ td = d; tgt = { x: en.x, y: en.y, en, r: er2 }; }
+  }
+  for (const bb of bosses){
+    if (bb.y - bb.r < 0) continue;
+    const d = Math.hypot(bb.x - gcx, bb.y - gcy);
+    if (d < td){ td = d; tgt = { x: bb.x, y: bb.y, boss: bb, r: bb.r }; }
+  }
   for (let ri = 0; ri < raiders.length; ri++){
     const rd = raiders[ri];
     rd.wob += dt * 5;
-    // 一番近い敵かボスを狙う(完全に画面に入っている相手だけ)
-    let tgt = null, td = 1e9;
-    for (const en of enemies){
-      if (en.count <= 0) continue;
-      const er2 = enemyRadius(en);
-      if (en.y - er2 < 0) continue;
-      const d = Math.hypot(en.x - rd.x, en.y - rd.y);
-      if (d < td){ td = d; tgt = { x: en.x, y: en.y, en, r: er2 }; }
-    }
-    for (const bb of bosses){
-      if (bb.y - bb.r < 0) continue;
-      const d = Math.hypot(bb.x - rd.x, bb.y - rd.y);
-      if (d < td){ td = d; tgt = { x: bb.x, y: bb.y, boss: bb, r: bb.r }; }
-    }
     if (tgt){
-      const dx = tgt.x - rd.x, dy2 = tgt.y - rd.y, dl = Math.hypot(dx, dy2) || 1;
-      if (dl > tgt.r + 16){                       // 突撃!
-        rd.x += dx / dl * 125 * dt;
-        rd.y += dy2 / dl * 125 * dt;
-      } else {                                    // 直接攻撃
+      // 標的の下側を囲む「持ち場」へ整列して襲いかかる(フラフラしない)
+      const slot = (ri % 7) - 3;
+      const ring = Math.floor(ri / 7);
+      const ang = Math.PI / 2 + slot * 0.3;
+      const rr2 = tgt.r + 13 + ring * 20;
+      const px2 = tgt.x + Math.cos(ang) * rr2;
+      const py2 = tgt.y + Math.sin(ang) * rr2;
+      const dx = px2 - rd.x, dy2 = py2 - rd.y, dl = Math.hypot(dx, dy2) || 1;
+      if (dl > 5){                                // 持ち場へ直進
+        const sp = Math.min(135, dl / dt);
+        rd.x += dx / dl * sp * dt;
+        rd.y += dy2 / dl * sp * dt;
+      }
+      // 標的に届く距離なら攻撃
+      const adx = tgt.x - rd.x, ady = tgt.y - rd.y;
+      const adl = Math.hypot(adx, ady) || 1;
+      if (adl < tgt.r + 22){
         rd.atkT -= dt;
         if (rd.atkT <= 0){
           const mw = MELEE[raiderMid(ri)];
           rd.atkT = mw.rate;
-          addSlash(rd.x + (dx / dl) * 10, rd.y + (dy2 / dl) * 10 - 6);
-          burst(tgt.x - (dx / dl) * tgt.r * 0.5, tgt.y - (dy2 / dl) * tgt.r * 0.5, "#ffd9a8", 4);
+          addSlash(rd.x + (adx / adl) * 10, rd.y + (ady / adl) * 10 - 6);
+          burst(tgt.x - (adx / adl) * tgt.r * 0.5, tgt.y - (ady / adl) * tgt.r * 0.5, "#ffd9a8", 4);
           if (tgt.en){
             const en = tgt.en;
             en.hpBuf = (en.hpBuf || 0) + mw.dmg;
@@ -455,10 +474,11 @@ function updateRaiders(dt){
         }
       }
     } else {
-      // 敵がいない間は隊列の少し前(中間地点)で待機
-      const hx = player.x + Math.sin(rd.wob) * 26, hy = player.y - 170;
-      rd.x += (hx - rd.x) * dt * 2.2;
-      rd.y += (hy - rd.y) * dt * 2.2;
+      // 敵がいない間は隊列の少し前に整列して待機
+      const hx = player.x + ((ri % 5) - 2) * 24;
+      const hy = player.y - 170 - Math.floor(ri / 5) * 24;
+      rd.x += (hx - rd.x) * dt * 2.5;
+      rd.y += (hy - rd.y) * dt * 2.5;
     }
     // 生きている間は敵より上(奥)へは行かない
     if (tgt && rd.y < tgt.y + 6) rd.y = tgt.y + 6;
@@ -578,7 +598,16 @@ function spawnStep(dy){
       if (gates.some(g => g.y < 170 && g.slots.some(s => s && s.chain))){
         spawnDist = 120;
       } else {
-        makeEnemy(); if (Math.random() < 0.4) makeEnemy(); spawnKind = 0; spawnDist = 200;
+        // 五月雨ではなく、団体でゾロゾロと一斉に襲ってくる
+        const gN = 3 + Math.floor(Math.random() * 2);        // 3〜4グループの大群
+        for (let gi = 0; gi < gN; gi++){
+          makeEnemy(gi === gN - 1 && Math.random() < 0.5);   // 群れの後方に装甲兵が混ざる
+          const en2 = enemies[enemies.length - 1];
+          en2.x = ROAD_L + 55 + (gi % 3 + 0.5) * (ROAD_R - ROAD_L - 110) / 3 + (Math.random() - 0.5) * 24;
+          en2.y = -50 - Math.floor(gi / 3) * 85 - Math.random() * 25;
+        }
+        spawnKind = 0;
+        spawnDist = 430;                                     // 大群のあとは次の団体まで間隔を空ける
       }
     }
   }
@@ -809,7 +838,8 @@ function update(dt){
       const dl = Math.hypot(dxc, dyc) || 1;
       const charge = DIFF.chargeBase + (stage - 1) * DIFF.chargePerStage;   // 突進速度(ステージで加速)
       en.x += (dxc / dl) * charge * 0.7 * dt;
-      en.y += dy * 0.9 + Math.max(0, dyc / dl) * charge * dt;
+      // 下に迫ってくるスピードは3割遅め
+      en.y += (dy * 0.9 + Math.max(0, dyc / dl) * charge * dt) * 0.7;
       // 攻撃タイプごとの間合いで止まる(毒吐きは少し離れた所から吐く)
       const reach = en.atype === "poison" ? er * 0.5 + 95 : er * 0.5 + 22;
       const stopY = player.y - reach;
@@ -1888,7 +1918,7 @@ function drawBossWeapon(wtype){
 function drawSoldier(sx, sy, wid){
   ctx.save();
   ctx.translate(sx, sy);
-  ctx.scale(1.35, 1.35);                                   // 一般隊員は半分サイズ
+  ctx.scale(2.0, 2.0);                                     // 幹部は50%大きめ表示
   ctx.fillStyle = "#2c3320";                               // 軍パンツ
   ctx.fillRect(-3.2, 2, 2.6, 5.4);
   ctx.fillRect(0.6, 2, 2.6, 5.4);
